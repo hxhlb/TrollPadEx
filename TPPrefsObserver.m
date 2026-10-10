@@ -45,7 +45,12 @@ keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)contex
     self.forceEnableMedusaForLandscapeOnlyApps = [defaults boolForKey:@"TPForceEnableMedusaForLandscapeOnlyApps"];
     self.hideStageManagerResizeCorners = [defaults boolForKey:@"TPHideStageManagerResizeCorners"];
     self.useiPadAppSwitchingAnimation = [defaults boolForKey:@"TPUseiPadAppSwitchingAnimation"];
-    self.isFloatingDockSupported = [defaults boolForKey:@"TPIsFloatingDockSupported"];
+    if (@available(iOS 26.0, *)) {
+        id floatingDock = [defaults objectForKey:@"TPIsFloatingDockSupported"];
+        self.isFloatingDockSupported = floatingDock ? [floatingDock boolValue] : YES;
+    } else {
+        self.isFloatingDockSupported = [defaults boolForKey:@"TPIsFloatingDockSupported"];
+    }
     self.scaleGridSwitcher = [defaults boolForKey:@"TPScaleGridSwitcher"];
     self.stageManagerSide = [defaults integerForKey:@"TPStageManagerSide"];
     id mirrorAppSwitcher = [defaults objectForKey:@"TPMirrorStageManagerSwitcher"];

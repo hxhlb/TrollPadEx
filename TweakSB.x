@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <MobileGestalt/MobileGestalt.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import "SpringBoard.h"
 #import "TPPrefsObserver.h"
 #import "UIKitPrivate.h"
@@ -20,6 +21,8 @@
 
 static TPPrefsObserver* pref;
 static BOOL trollPadEnabled;
+static void TPRefreshWindowingGestures(void);
+static id (*TPSettingForSelector)(Class, SEL);
 
 static void loadTrollPadEnabled() {
     Boolean keyExists = false;
@@ -33,6 +36,12 @@ static void loadTrollPadEnabled() {
 
 static void trollPadPrefsChanged(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     loadTrollPadEnabled();
+    if (@available(iOS 26.0, *)) {
+        // Let TPPrefsObserver finish refreshing before rebuilding cached gesture edges.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            TPRefreshWindowingGestures();
+        });
+    }
 }
 
 typedef NS_ENUM(NSInteger, TPStageManagerSide) {
@@ -44,6 +53,12 @@ typedef struct {
     double leadingAlpha;
     double trailingAlpha;
 } TPSwitcherGradientWallpaperAttributes;
+
+// iOS 26's SBWindowingItemFrame contains a CGRect followed by four CGPoints.
+typedef struct {
+    CGRect frame;
+    CGPoint components[4];
+} TPWindowingItemFrame;
 
 static BOOL isStageManagerEnabled() {
     id value = [NSUserDefaults.standardUserDefaults objectForKey:@"SBChamoisWindowingEnabled"];
@@ -64,6 +79,13 @@ static BOOL isMultitaskingActive() {
 
 static BOOL isStageManagerActive() {
     return trollPadEnabled && isStageManagerEnabled();
+}
+
+static BOOL isWindowingActive() {
+    if (@available(iOS 26.0, *)) {
+        return isMultitaskingActive();
+    }
+    return isStageManagerActive();
 }
 
 static BOOL shouldUseRightStageManagerSide() {
@@ -88,6 +110,18 @@ static BOOL isStageManagerAppSwitcherObject(id object) {
 }
 
 static BOOL shouldForceStageManagerRightToLeft(id object) {
+    if (@available(iOS 26.0, *)) {
+        NSString *className = NSStringFromClass(object_getClass(object));
+        if ([className isEqualToString:@"SBStripLayoutWindowingModifier"]) {
+            return shouldUseRightStageManagerSide();
+        }
+        if ([className isEqualToString:@"SBFlexibleWindowingHomeGestureSwitcherModifier"] ||
+            [className isEqualToString:@"SBExposeWindowingModifier"] ||
+            [className isEqualToString:@"SBFlexibleWindowingToAppExposeWindowingModifier"] ||
+            [className isEqualToString:@"SBFlexibleWindowingExposeToHomePeekWindowingModifier"]) {
+            return shouldMirrorAppSwitcher();
+        }
+    }
     if (isStageManagerAppSwitcherObject(object)) {
         return shouldMirrorAppSwitcher();
     }
@@ -95,6 +129,47 @@ static BOOL shouldForceStageManagerRightToLeft(id object) {
 }
 
 static __thread NSUInteger forceStageManagerRightToLeft = 0;
+static NSHashTable *windowingGestureManagers;
+static NSInteger lastWindowingGestureSide;
+static BOOL lastWindowingGestureEnabled;
+
+static void TPRegisterWindowingGestureManager(id manager) {
+    if (!windowingGestureManagers) {
+        windowingGestureManagers = [NSHashTable weakObjectsHashTable];
+        lastWindowingGestureSide = pref.stageManagerSide;
+        lastWindowingGestureEnabled = trollPadEnabled;
+    }
+    [windowingGestureManagers addObject:manager];
+}
+
+static void TPRefreshWindowingGestures(void) {
+    if (!windowingGestureManagers ||
+        (lastWindowingGestureSide == pref.stageManagerSide &&
+         lastWindowingGestureEnabled == trollPadEnabled)) {
+        return;
+    }
+    lastWindowingGestureSide = pref.stageManagerSide;
+    lastWindowingGestureEnabled = trollPadEnabled;
+
+    Ivar switcherIvar = class_getInstanceVariable(
+        objc_getClass("SBFluidSwitcherGestureManager"), "_switcherController");
+    if (!switcherIvar) {
+        return;
+    }
+    for (id manager in windowingGestureManagers.allObjects) {
+        id switcher = object_getIvar(manager, switcherIvar);
+        id context = [switcher valueForKey:@"windowManagementContext"];
+        if (!context) {
+            continue;
+        }
+        ((void (*)(id, SEL))objc_msgSend)(manager,
+            @selector(_tearDownFloatingApplicationGestureRecognizers));
+        ((void (*)(id, SEL))objc_msgSend)(manager,
+            @selector(_tearDownChamoisGestureRecognizers));
+        ((void (*)(id, SEL, id))objc_msgSend)(manager,
+            @selector(updateForWindowManagementContext:), context);
+    }
+}
 
 #define TPBeginStageManagerRightToLeft() \
     BOOL tpShouldForceStageManagerRightToLeft = shouldForceStageManagerRightToLeft(self); \
@@ -148,6 +223,19 @@ static BOOL canInstallStageManagerSwitcherTransitionHooks() {
     return switcherToAppModifierClass &&
         class_getInstanceMethod(switcherToAppModifierClass, @selector(frameForIndex:)) &&
         class_getInstanceMethod(switcherToAppModifierClass, @selector(contentOffsetForIndex:alignment:));
+}
+
+static BOOL hasWindowingItemFrameMethod(Class modifierClass) {
+    Method method = class_getInstanceMethod(modifierClass, @selector(frameForItem:));
+    if (!method) {
+        return NO;
+    }
+    NSMethodSignature *signature = [NSMethodSignature signatureWithObjCTypes:
+        method_getTypeEncoding(method)];
+    return signature.numberOfArguments == 3 &&
+        signature.methodReturnType[0] == '{' &&
+        signature.methodReturnLength == sizeof(TPWindowingItemFrame) &&
+        [signature getArgumentTypeAtIndex:2][0] == '@';
 }
 
 // Since some methods explicitly check for user interface idiom, I have no better way to fool them
@@ -314,6 +402,157 @@ static uint16_t forcePadIdiom = 0;
 %end
 %end
 
+%group TPFlexibleWindowingHooks
+%hook SBAppSwitcherSettings
+- (NSInteger)switcherStyle {
+    // iOS 26's controller factory reads the raw style before effectiveSwitcherStyle.
+    return trollPadEnabled ? 2 : %orig;
+}
+%end
+
+%hook SBWindowScene
+- (BOOL)supportsMultitasking {
+    return trollPadEnabled ? YES : %orig;
+}
+%end
+%end
+
+%group TPFlexibleWindowingSideHooks
+%hook SBWindowingModifier
+- (BOOL)isRTLEnabled {
+    return shouldForceStageManagerRightToLeft(self) ? YES : %orig;
+}
+
+- (id)flexibleAutoLayoutSpaceForAppLayout:(id)appLayout {
+    TPBeginStageManagerRightToLeft();
+    id result = %orig;
+    TPEndStageManagerRightToLeft();
+    return result;
+}
+%end
+
+%hook SBFluidSwitcherGestureManager
+- (void)_setUpFloatingApplicationGestureRecognizers {
+    TPRegisterWindowingGestureManager(self);
+    BOOL useRightEdge = trollPadEnabled && pref.stageManagerSide == TPStageManagerSideRight;
+    if (useRightEdge) {
+        forceStageManagerRightToLeft++;
+    }
+    %orig;
+    if (useRightEdge) {
+        forceStageManagerRightToLeft--;
+    }
+}
+
+- (void)_setUpChamoisGestureRecognizers {
+    TPRegisterWindowingGestureManager(self);
+    BOOL useRightEdge = trollPadEnabled && pref.stageManagerSide == TPStageManagerSideRight;
+    if (useRightEdge) {
+        forceStageManagerRightToLeft++;
+    }
+    %orig;
+    if (useRightEdge) {
+        forceStageManagerRightToLeft--;
+    }
+}
+
+- (NSUInteger)_continuousExposeStripEdge {
+    return trollPadEnabled && pref.stageManagerSide == TPStageManagerSideRight ? UIRectEdgeRight : %orig;
+}
+%end
+
+%hook SBStripLayoutWindowingModifier
+- (double)_stripOriginX {
+    TPBeginStageManagerRightToLeft();
+    double result = %orig;
+    TPEndStageManagerRightToLeft();
+    return result;
+}
+
+- (TPWindowingItemFrame)frameForItem:(id)item {
+    TPBeginStageManagerRightToLeft();
+    TPWindowingItemFrame result = %orig;
+    TPEndStageManagerRightToLeft();
+    return result;
+}
+
+- (CGRect)frameForLayoutRole:(NSInteger)layoutRole inAppLayout:(id)appLayout withBounds:(CGRect)bounds {
+    TPBeginStageManagerRightToLeft();
+    CGRect result = %orig;
+    TPEndStageManagerRightToLeft();
+    return result;
+}
+
+- (void)layoutViewModelsIfNeeded {
+    TPBeginStageManagerRightToLeft();
+    %orig;
+    TPEndStageManagerRightToLeft();
+}
+%end
+%end
+
+%group TPFlexibleWindowingMirrorHooks
+%hook SBExposeWindowingModifier
+- (TPWindowingItemFrame)frameForItem:(id)item {
+    TPBeginStageManagerRightToLeft();
+    TPWindowingItemFrame result = %orig;
+    TPEndStageManagerRightToLeft();
+    return result;
+}
+%end
+
+%hook SBSwitcherModifier
+- (BOOL)isRTLEnabled {
+    return shouldForceStageManagerRightToLeft(self) ? YES : %orig;
+}
+
+- (CGRect)scaledFrameForLayoutRole:(NSInteger)layoutRole inAppLayout:(id)appLayout atIndex:(NSUInteger)index {
+    TPBeginStageManagerRightToLeft();
+    CGRect result = %orig;
+    TPEndStageManagerRightToLeft();
+    return result;
+}
+%end
+
+%hook SBAppSwitcherContinuousExposeSwitcherModifier
+- (CGRect)_frameForAppLayout:(id)appLayout withScaledApplied:(BOOL)scaled scrollOffsetApplied:(BOOL)scrolled {
+    TPBeginStageManagerRightToLeft();
+    CGRect result = %orig;
+    TPEndStageManagerRightToLeft();
+    return result;
+}
+
+- (CGPoint)contentOffsetForIndex:(NSUInteger)index alignment:(NSInteger)alignment {
+    TPBeginStageManagerRightToLeft();
+    CGPoint result = %orig;
+    TPEndStageManagerRightToLeft();
+    return result;
+}
+%end
+
+%hook SBFlexibleWindowingHomeGestureSwitcherModifier
+- (void)_updateTranslationAdjustmentForGestureFromHomeScreenIfNeededWithEvent:(id)event {
+    TPBeginStageManagerRightToLeft();
+    %orig;
+    TPEndStageManagerRightToLeft();
+}
+
+- (CGRect)frameForIndex:(NSUInteger)index {
+    TPBeginStageManagerRightToLeft();
+    CGRect result = %orig;
+    TPEndStageManagerRightToLeft();
+    return result;
+}
+
+- (CGPoint)perspectiveAngleForIndex:(NSUInteger)index {
+    TPBeginStageManagerRightToLeft();
+    CGPoint result = %orig;
+    TPEndStageManagerRightToLeft();
+    return result;
+}
+%end
+%end
+
 // Min width and height are 150, smaller may crash the app
 %hook SBSwitcherChamoisLayoutAttributes
 - (void)setGridWidths:(NSArray<NSNumber *> *)values {
@@ -405,7 +644,7 @@ static uint16_t forcePadIdiom = 0;
         return %orig;
     }
     // !self.isResizingAllowed && 
-    if (self._screen != UIScreen.mainScreen || isStageManagerActive()) {
+    if (self._screen != UIScreen.mainScreen || isWindowingActive()) {
         %orig(0b1111);
         // 1100: enable resizing for bottoms
         // 1111: enable resizing for all corners
@@ -523,15 +762,15 @@ static uint16_t forcePadIdiom = 0;
 
 %hook SBApplication
 - (BOOL)supportsChamoisSceneResizing {
-    return isStageManagerActive() ? YES : %orig;
+    return isWindowingActive() ? YES : %orig;
 }
 
 - (BOOL)supportsChamoisViewResizing {
-    return isStageManagerActive() ? YES : %orig;
+    return isWindowingActive() ? YES : %orig;
 }
 
 - (BOOL)alwaysMaximizedInChamois {
-    return isStageManagerActive() ? NO : %orig;
+    return isWindowingActive() ? NO : %orig;
 }
 %end
 %end
@@ -762,7 +1001,24 @@ static uint16_t forcePadIdiom = 0;
 
 %hook SBFloatingDockController
 + (BOOL)isFloatingDockSupported {
-    return trollPadEnabled && pref.isFloatingDockSupported ? YES : %orig;
+    if (trollPadEnabled && pref.isFloatingDockSupported) {
+        if (@available(iOS 26.0, *)) {
+            // Legacy backgrounding hooks can prevent FrontBoard from registering
+            // this required UIKit property. Do not create an invalid remote Dock.
+            Class settingsClass = objc_getClass("UIMutableApplicationSceneSettings");
+            if (!settingsClass || !TPSettingForSelector ||
+                !TPSettingForSelector(settingsClass, @selector(deactivationReasons))) {
+                static BOOL loggedMissingSetting;
+                if (!loggedMissingSetting) {
+                    loggedMissingSetting = YES;
+                    NSLog(@"[TrollPadEx] Floating Dock unavailable: deactivationReasons is not registered; check legacy backgrounding hooks");
+                }
+                return NO;
+            }
+        }
+        return YES;
+    }
+    return %orig;
 }
 %end
 
@@ -796,6 +1052,16 @@ static uint16_t forcePadIdiom = 0;
 
 // Unlock external display support for MDC versions
 static int (*originalExtDisplayEnabledFunc)(void);
+static BOOL (*originalFlexibleWindowingUIAvailable)(void);
+static BOOL (*originalChamoisWindowingUIAvailable)(void);
+
+static BOOL hookedFlexibleWindowingUIAvailable(void) {
+    return trollPadEnabled ? YES : originalFlexibleWindowingUIAvailable();
+}
+
+static BOOL hookedChamoisWindowingUIAvailable(void) {
+    return trollPadEnabled ? YES : originalChamoisWindowingUIAvailable();
+}
 
 int hookedExtDisplayEnabledFunc() {
     // clang forgets to PAC this function, so we need this ugly line
@@ -877,11 +1143,50 @@ static BOOL shouldForceMultitaskingProperty(CFStringRef property) {
 
 %ctor {
     loadTrollPadEnabled();
+    if (@available(iOS 26.0, *)) {
+        TPSettingForSelector = dlsym(RTLD_DEFAULT, "FBSSettingForSelector");
+    }
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
         trollPadPrefsChanged, CFSTR("com.kdt.trollpad/saved"), NULL,
         CFNotificationSuspensionBehaviorCoalesce);
     pref = [TPPrefsObserver new];
     %init;
+
+    if (@available(iOS 26.0, *)) {
+        Class windowSceneClass = objc_getClass("SBWindowScene");
+        if (windowSceneClass && class_getInstanceMethod(windowSceneClass,
+            @selector(supportsMultitasking))) {
+            %init(TPFlexibleWindowingHooks);
+        }
+        Class stripClass = objc_getClass("SBStripLayoutWindowingModifier");
+        Class gestureClass = objc_getClass("SBFluidSwitcherGestureManager");
+        Class windowingModifierClass = objc_getClass("SBWindowingModifier");
+        (void)[(id)gestureClass class];
+        (void)[(id)windowingModifierClass class];
+        if (stripClass && class_getInstanceMethod(stripClass, @selector(_stripOriginX)) &&
+            hasWindowingItemFrameMethod(stripClass) &&
+            windowingModifierClass && class_getInstanceMethod(windowingModifierClass, @selector(isRTLEnabled)) &&
+            class_getInstanceMethod(windowingModifierClass, @selector(flexibleAutoLayoutSpaceForAppLayout:)) &&
+            gestureClass && class_getInstanceMethod(gestureClass,
+                @selector(_continuousExposeStripEdge)) &&
+            class_getInstanceMethod(gestureClass, @selector(_setUpFloatingApplicationGestureRecognizers)) &&
+            class_getInstanceMethod(gestureClass, @selector(_setUpChamoisGestureRecognizers)) &&
+            class_getInstanceMethod(gestureClass, @selector(_tearDownFloatingApplicationGestureRecognizers)) &&
+            class_getInstanceMethod(gestureClass, @selector(_tearDownChamoisGestureRecognizers)) &&
+            class_getInstanceMethod(gestureClass, @selector(updateForWindowManagementContext:))) {
+            %init(TPFlexibleWindowingSideHooks);
+        }
+        Class homeGestureClass = objc_getClass("SBFlexibleWindowingHomeGestureSwitcherModifier");
+        Class appSwitcherClass = objc_getClass("SBAppSwitcherContinuousExposeSwitcherModifier");
+        Class exposeClass = objc_getClass("SBExposeWindowingModifier");
+        if (homeGestureClass && class_getInstanceMethod(homeGestureClass,
+                @selector(perspectiveAngleForIndex:)) &&
+            hasWindowingItemFrameMethod(exposeClass) &&
+            appSwitcherClass && class_getInstanceMethod(appSwitcherClass,
+                @selector(_frameForAppLayout:withScaledApplied:scrollOffsetApplied:))) {
+            %init(TPFlexibleWindowingMirrorHooks);
+        }
+    }
 
     if (@available(iOS 18.0, *)) {
         // These private MobileGestalt functions are unsafe to hook on iOS 18.
@@ -904,6 +1209,24 @@ static BOOL shouldForceMultitaskingProperty(CFStringRef property) {
 
     // Unlock external display support for MDC versions
     void *sbFoundationHandle = dlopen("/System/Library/PrivateFrameworks/SpringBoardFoundation.framework/SpringBoardFoundation", RTLD_GLOBAL);
+    if (@available(iOS 26.0, *)) {
+        // iOS 26 replaces windowManagementStyle with a window management context.
+        // Let the system build that context from its own multitasking preferences.
+        void *flexibleWindowingUIAvailable = dlsym(sbFoundationHandle,
+            "SBFIsFlexibleWindowingUIAvailable");
+        if (flexibleWindowingUIAvailable) {
+            MSHookFunction(flexibleWindowingUIAvailable,
+                (void *)hookedFlexibleWindowingUIAvailable,
+                (void **)&originalFlexibleWindowingUIAvailable);
+        }
+        void *chamoisWindowingUIAvailable = dlsym(sbFoundationHandle,
+            "SBFIsChamoisWindowingUIAvailable");
+        if (chamoisWindowingUIAvailable) {
+            MSHookFunction(chamoisWindowingUIAvailable,
+                (void *)hookedChamoisWindowingUIAvailable,
+                (void **)&originalChamoisWindowingUIAvailable);
+        }
+    }
     // iOS 16.0
     void *extDisplayEnabledFunc = dlsym(sbFoundationHandle, "SBChamoisExternalDisplayControllerIsEnabled");
     if (!extDisplayEnabledFunc) {
