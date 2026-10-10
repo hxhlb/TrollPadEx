@@ -1,7 +1,7 @@
 # iOS 26 support
 
 Branch: `ios26-support`. Latest local test package: `2.0.1+ios26.1-test3`.
-The release version in `control` remains `2.0.1`; nothing has been published.
+The release version in `control` is now `2.0.2`; nothing has been published.
 Test2's default-value correction and the VM's legacy-plugin crash isolation
 are documented in [IOS26-DOCK.md](IOS26-DOCK.md). The checks below describe the
 original test1 windowing validation.
