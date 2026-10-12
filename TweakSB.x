@@ -2,8 +2,10 @@
 #import <MobileGestalt/MobileGestalt.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <substrate.h>
 #import "SpringBoard.h"
 #import "TPPrefsObserver.h"
+#import "TPWindowScaling.h"
 #import "UIKitPrivate.h"
 
 #include <assert.h>
@@ -21,6 +23,8 @@
 
 static TPPrefsObserver* pref;
 static BOOL trollPadEnabled;
+// Controller/gesture-manager changes are applied only after a respring.
+static BOOL useiPadAppSwitcher;
 static void TPRefreshWindowingGestures(void);
 static id (*TPSettingForSelector)(Class, SEL);
 
@@ -92,8 +96,12 @@ static BOOL shouldUseRightStageManagerSide() {
     return isStageManagerActive() && pref.stageManagerSide == TPStageManagerSideRight;
 }
 
+static BOOL shouldScaleAppWindows(void) {
+    return pref.scaleAppWindows && isWindowingActive();
+}
+
 static BOOL shouldMirrorAppSwitcher() {
-    return trollPadEnabled && pref.mirrorAppSwitcher;
+    return trollPadEnabled && useiPadAppSwitcher && pref.mirrorAppSwitcher;
 }
 
 static BOOL isContinuousExposeObject(id object) {
@@ -187,6 +195,285 @@ static BOOL canInstallStageManagerSwitcherHook() {
 
     return switcherControllerClass &&
         class_getInstanceMethod(switcherControllerClass, @selector(windowManagementStyle));
+}
+
+static BOOL canInstallInAppDockGestureHook(void) {
+    const struct { const char *className; const char *selector; const char *types; } methods[] = {
+        {"SBFluidSwitcherViewController", "isSoftwareKeyboardVisible", "B16@0:8"},
+        {"SBWindowScene", "isMainDisplayWindowScene", "B16@0:8"},
+        {"SBWindowScene", "switcherController", "@16@0:8"},
+        {"SBSwitcherController", "isAnySwitcherVisible", "B16@0:8"},
+        {"SBSwitcherController", "unlockedEnvironmentMode", "q16@0:8"},
+        {"SBSwitcherController", "contentViewController", "@16@0:8"},
+        {"SBFloatingDockController", "windowScene", "@16@0:8"},
+        {"SBFloatingDockController", "isInvalidated", "B16@0:8"},
+        {"SBFloatingDockController", "isFloatingDockPresented", "B16@0:8"},
+        {"SBFloatingDockController", "activeAssertion", "@16@0:8"},
+        {"SBFloatingDockController", "remoteContentManager", "@16@0:8"},
+        {"SBFloatingDockRemoteContentManager", "isContentReady", "B16@0:8"},
+        {"SBFloatingDockBehaviorAssertion", "level", "Q16@0:8"},
+        {"SBFloatingDockBehaviorAssertion", "floatingDockController", "@16@0:8"},
+        {"SBFloatingDockBehaviorAssertion", "gesturePossible", "B16@0:8"},
+    };
+    for (NSUInteger i = 0; i < sizeof(methods) / sizeof(methods[0]); i++) {
+        Method method = class_getInstanceMethod(objc_getClass(methods[i].className),
+            sel_registerName(methods[i].selector));
+        if (!method || strcmp(method_getTypeEncoding(method), methods[i].types) != 0) return NO;
+    }
+    return YES;
+}
+
+static BOOL shouldRecoverInAppDockGesture(id assertion) {
+    if (!isWindowingActive() || !pref.isFloatingDockSupported ||
+        !UIApplication.sharedApplication.protectedDataAvailable) return NO;
+    // Level 9 is app/switcher layout policy. Preserve every other policy level.
+    if (!assertion || ((NSUInteger (*)(id, SEL))objc_msgSend)(assertion, @selector(level)) != 9) return NO;
+    id dock = ((id (*)(id, SEL))objc_msgSend)(assertion, @selector(floatingDockController));
+    if (!dock || ((BOOL (*)(id, SEL))objc_msgSend)(dock, @selector(isInvalidated)) ||
+        ((BOOL (*)(id, SEL))objc_msgSend)(dock, @selector(isFloatingDockPresented))) return NO;
+    if (((id (*)(id, SEL))objc_msgSend)(dock, @selector(activeAssertion)) != assertion) return NO;
+    id scene = ((id (*)(id, SEL))objc_msgSend)(dock, @selector(windowScene));
+    if (!scene || !((BOOL (*)(id, SEL))objc_msgSend)(scene, @selector(isMainDisplayWindowScene))) return NO;
+    id switcher = ((id (*)(id, SEL))objc_msgSend)(scene, @selector(switcherController));
+    // Native mode 3 is application. The content controller's environmentMode is a stub.
+    if (!switcher || ((NSInteger (*)(id, SEL))objc_msgSend)(switcher, @selector(unlockedEnvironmentMode)) != 3 ||
+        ((BOOL (*)(id, SEL))objc_msgSend)(switcher, @selector(isAnySwitcherVisible))) return NO;
+    id content = ((id (*)(id, SEL))objc_msgSend)(switcher, @selector(contentViewController));
+    if (![content isKindOfClass:objc_getClass("SBFluidSwitcherViewController")] ||
+        ((BOOL (*)(id, SEL))objc_msgSend)(content, @selector(isSoftwareKeyboardVisible))) return NO;
+    id remote = ((id (*)(id, SEL))objc_msgSend)(dock, @selector(remoteContentManager));
+    return remote && ((BOOL (*)(id, SEL))objc_msgSend)(remote, @selector(isContentReady));
+}
+
+static id TPDeckOrganicExposeAppLayout(id self, SEL command) {
+    // A deck has no organic App Expose pile. The native home gesture treats
+    // nil as "no pile to reorder/filter", while retaining its normal elements.
+    return nil;
+}
+
+@interface NSObject (TPPhoneWindowingAdapter)
+- (instancetype)initWithSwitcherModifier:(id)modifier;
+@end
+static Class TPPhoneDeckWindowingClass;
+static Class TPPhoneDeckClass;
+static char TPPhoneDeckAssociation;
+
+static id TPPhoneDeckWindowingCopy(id self, SEL command, NSZone *zone) NS_RETURNS_RETAINED;
+static id TPPhoneDeckWindowingCopy(id self, SEL command, NSZone *zone) {
+    // SBChainableModifier's default copy is alloc/init. Root adapters require
+    // their designated initializer to rebuild the contained legacy query tree.
+    id deck = [objc_getAssociatedObject(self, &TPPhoneDeckAssociation) copyWithZone:zone];
+    id adapter = [[object_getClass(self) allocWithZone:zone] initWithSwitcherModifier:deck];
+    objc_setAssociatedObject(adapter, &TPPhoneDeckAssociation, deck, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return adapter;
+}
+
+static id (*TPOriginalGridMultitaskingModifier)(id, SEL);
+static id TPPhoneGridMultitaskingModifier(id self, SEL command) {
+    id modifier = TPOriginalGridMultitaskingModifier(self, command);
+    if (trollPadEnabled && !useiPadAppSwitcher &&
+        object_getClass(self) == objc_getClass("SBHomeToGridSwitcherModifier") &&
+        TPPhoneDeckWindowingClass && object_getClass(modifier) == TPPhoneDeckWindowingClass) {
+        // The outer Expose transition needs the modern adapter. Its legacy Grid
+        // child must temporarily attach only the Deck, not reparent the adapter.
+        return objc_getAssociatedObject(modifier, &TPPhoneDeckAssociation) ?: modifier;
+    }
+    return modifier;
+}
+
+static id TPPhoneDeckView(id modifier) {
+    Class windowing = objc_getClass("SBWindowingSwitcherPersonality");
+    Class fluid = objc_getClass("SBFluidSwitcherPersonality");
+    for (NSUInteger depth = 0; modifier && depth < 32; depth++) {
+        if ((windowing && [modifier isKindOfClass:windowing]) ||
+            (fluid && [modifier isKindOfClass:fluid])) {
+            return ((id (*)(id, SEL))objc_msgSend)(modifier, @selector(view));
+        }
+        modifier = ((id (*)(id, SEL))objc_msgSend)(modifier, @selector(parentModifier));
+    }
+    return nil;
+}
+
+static id TPPhoneDeckObjectQuery(id self, SEL command) {
+    return ((id (*)(id, SEL))objc_msgSend)(TPPhoneDeckView(self), command);
+}
+
+static CGPoint TPPhoneDeckPointQuery(id self, SEL command) {
+    return ((CGPoint (*)(id, SEL))objc_msgSend)(TPPhoneDeckView(self), command);
+}
+
+static CGRect TPPhoneDeckRectQuery(id self, SEL command) {
+    return ((CGRect (*)(id, SEL))objc_msgSend)(TPPhoneDeckView(self), command);
+}
+
+static BOOL TPPhoneDeckBoolQuery(id self, SEL command) {
+    return ((BOOL (*)(id, SEL))objc_msgSend)(TPPhoneDeckView(self), command);
+}
+
+static CGFloat TPPhoneDeckFloatQuery(id self, SEL command) {
+    return ((CGFloat (*)(id, SEL))objc_msgSend)(TPPhoneDeckView(self), command);
+}
+
+static NSInteger TPPhoneDeckIntegerQuery(id self, SEL command) {
+    return ((NSInteger (*)(id, SEL))objc_msgSend)(TPPhoneDeckView(self), command);
+}
+
+static CGPoint TPPhoneDeckScrollablePointQuery(id self, SEL command, id modifier, CGPoint point) {
+    return ((CGPoint (*)(id, SEL, id, CGPoint))objc_msgSend)(TPPhoneDeckView(self), command, modifier, point);
+}
+
+static id TPPhoneDeckInQueryChain(id modifier) {
+    for (NSUInteger depth = 0; modifier && depth < 32; depth++) {
+        if (TPPhoneDeckClass && object_getClass(modifier) == TPPhoneDeckClass) return modifier;
+        modifier = ((id (*)(id, SEL))objc_msgSend)(modifier, @selector(nextQueryModifier));
+    }
+    return nil;
+}
+
+static id (*TPOriginalHomeFloorAppLayouts)(id, SEL);
+static id TPPhoneHomeFloorAppLayouts(id self, SEL command) {
+    if (trollPadEnabled && !useiPadAppSwitcher) {
+        id deck = TPPhoneDeckInQueryChain(self);
+        if (deck) return TPPhoneDeckObjectQuery(deck, command);
+    }
+    return TPOriginalHomeFloorAppLayouts(self, command);
+}
+
+static BOOL (*TPOriginalHomeFloorReduceMotion)(id, SEL);
+static BOOL TPPhoneHomeFloorReduceMotion(id self, SEL command) {
+    if (trollPadEnabled && !useiPadAppSwitcher) {
+        id deck = TPPhoneDeckInQueryChain(self);
+        if (deck) return TPPhoneDeckBoolQuery(deck, command);
+    }
+    return TPOriginalHomeFloorReduceMotion(self, command);
+}
+
+static void TPPreparePhoneSwitcherCompatibility(void) {
+    Class deckClass = objc_getClass("SBDeckSwitcherModifier");
+    SEL selector = NSSelectorFromString(@"organicExposeAppLayout");
+    if (deckClass && !class_getInstanceMethod(deckClass, selector)) {
+        class_addMethod(deckClass, selector, (IMP)TPDeckOrganicExposeAppLayout, "@16@0:8");
+    }
+    if (deckClass && !TPPhoneDeckClass) {
+        if (@available(iOS 26.0, *)) {} else {
+            TPPhoneDeckClass = deckClass;
+            return;
+        }
+        // Native Deck methods request these content-view data queries. Temporary
+        // modern transitions can drop the legacy context cache, so keep the
+        // data source explicit without changing the Deck's layout algorithms.
+        const struct { const char *selector; const char *types; IMP implementation; } queries[] = {
+            {"appLayouts", "@16@0:8", (IMP)TPPhoneDeckObjectQuery},
+            {"containerViewBounds", "{CGRect={CGPoint=dd}{CGSize=dd}}16@0:8", (IMP)TPPhoneDeckRectQuery},
+            {"displayCornerRadius", "d16@0:8", (IMP)TPPhoneDeckFloatQuery},
+            {"homeGrabberSettings", "@16@0:8", (IMP)TPPhoneDeckObjectQuery},
+            {"isRTLEnabled", "B16@0:8", (IMP)TPPhoneDeckBoolQuery},
+            {"isReduceMotionEnabled", "B16@0:8", (IMP)TPPhoneDeckBoolQuery},
+            {"isShowingSpotlightOrTodayView", "B16@0:8", (IMP)TPPhoneDeckBoolQuery},
+            {"isSystemAssistantExperiencePersistentSiriEnabled", "B16@0:8", (IMP)TPPhoneDeckBoolQuery},
+            {"screenScale", "d16@0:8", (IMP)TPPhoneDeckFloatQuery},
+            {"scrollViewContentOffset", "{CGPoint=dd}16@0:8", (IMP)TPPhoneDeckPointQuery},
+            {"scrollableQueryModifier:contentOffsetVelocityConsideringNextContentOffset:", "{CGPoint=dd}40@0:8@16{CGPoint=dd}24", (IMP)TPPhoneDeckScrollablePointQuery},
+            {"scrollableQueryModifier:convertScrollViewPointToContainerViewCoordinateSpace:", "{CGPoint=dd}40@0:8@16{CGPoint=dd}24", (IMP)TPPhoneDeckScrollablePointQuery},
+            {"switcherInterfaceOrientation", "q16@0:8", (IMP)TPPhoneDeckIntegerQuery},
+            {"switcherSettings", "@16@0:8", (IMP)TPPhoneDeckObjectQuery},
+            {"switcherViewBounds", "{CGRect={CGPoint=dd}{CGSize=dd}}16@0:8", (IMP)TPPhoneDeckRectQuery},
+        };
+        for (NSUInteger i = 0; i < sizeof(queries) / sizeof(queries[0]); i++) {
+            Method method = class_getInstanceMethod(objc_getClass("SBFluidSwitcherViewController"),
+                sel_registerName(queries[i].selector));
+            if (!method || strcmp(method_getTypeEncoding(method), queries[i].types) != 0) return;
+        }
+        TPPhoneDeckClass = objc_getClass("TPPhoneDeckSwitcherModifier");
+        if (!TPPhoneDeckClass) {
+            TPPhoneDeckClass = objc_allocateClassPair(deckClass, "TPPhoneDeckSwitcherModifier", 0);
+            if (TPPhoneDeckClass) {
+                for (NSUInteger i = 0; i < sizeof(queries) / sizeof(queries[0]); i++) {
+                    class_addMethod(TPPhoneDeckClass, sel_registerName(queries[i].selector),
+                        queries[i].implementation, queries[i].types);
+                }
+                objc_registerClassPair(TPPhoneDeckClass);
+            }
+        }
+    }
+    if (@available(iOS 26.0, *)) {
+        // Home-floor completion queries use the legacy selector directly, while
+        // the modern query cache excludes it. Preserve normal queries elsewhere.
+        Class floorClass = objc_getClass("_SBHomeScreenFloorSwitcherModifier");
+        Method layouts = class_getInstanceMethod(floorClass, @selector(appLayouts));
+        if (TPPhoneDeckClass && !TPOriginalHomeFloorAppLayouts && layouts &&
+            strcmp(method_getTypeEncoding(layouts), "@16@0:8") == 0) {
+            MSHookMessageEx(floorClass, @selector(appLayouts), (IMP)TPPhoneHomeFloorAppLayouts,
+                (IMP *)&TPOriginalHomeFloorAppLayouts);
+        }
+        Method motion = class_getInstanceMethod(floorClass, @selector(isReduceMotionEnabled));
+        if (TPPhoneDeckClass && !TPOriginalHomeFloorReduceMotion && motion &&
+            strcmp(method_getTypeEncoding(motion), "B16@0:8") == 0) {
+            MSHookMessageEx(floorClass, @selector(isReduceMotionEnabled), (IMP)TPPhoneHomeFloorReduceMotion,
+                (IMP *)&TPOriginalHomeFloorReduceMotion);
+        }
+        Class rootClass = objc_getClass("SBRootWindowingModifier");
+        Method initializer = class_getInstanceMethod(rootClass, @selector(initWithSwitcherModifier:));
+        Method copy = class_getInstanceMethod(rootClass, @selector(copyWithZone:));
+        if (!rootClass || !initializer || strcmp(method_getTypeEncoding(initializer), "@24@0:8@16") != 0 ||
+            !copy || strcmp(method_getTypeEncoding(copy), "@24@0:8^{_NSZone=}16") != 0) return;
+        TPPhoneDeckWindowingClass = objc_getClass("TPPhoneDeckWindowingModifier");
+        if (!TPPhoneDeckWindowingClass) {
+            TPPhoneDeckWindowingClass = objc_allocateClassPair(rootClass, "TPPhoneDeckWindowingModifier", 0);
+            if (TPPhoneDeckWindowingClass) {
+                class_addMethod(TPPhoneDeckWindowingClass, selector, (IMP)TPDeckOrganicExposeAppLayout, "@16@0:8");
+                class_addMethod(TPPhoneDeckWindowingClass, @selector(copyWithZone:),
+                    (IMP)TPPhoneDeckWindowingCopy, "@24@0:8^{_NSZone=}16");
+                objc_registerClassPair(TPPhoneDeckWindowingClass);
+            }
+        }
+        Class gridClass = objc_getClass("SBHomeToGridSwitcherModifier");
+        SEL multitasking = @selector(multitaskingModifier);
+        Method getter = class_getInstanceMethod(gridClass, multitasking);
+        if (TPPhoneDeckWindowingClass && !TPOriginalGridMultitaskingModifier && getter &&
+            strcmp(method_getTypeEncoding(getter), "@16@0:8") == 0) {
+            MSHookMessageEx(gridClass, multitasking, (IMP)TPPhoneGridMultitaskingModifier,
+                (IMP *)&TPOriginalGridMultitaskingModifier);
+        }
+    }
+}
+
+static id (*TPOriginalContinuousExposeFactory)(id, SEL, id);
+static id TPPhoneContinuousExposeFactory(id self, SEL command, id event) {
+    id proposed = TPOriginalContinuousExposeFactory(self, command, event);
+    if (!trollPadEnabled || useiPadAppSwitcher) return proposed;
+    Class exposedClass = objc_getClass("SBExposeWindowingModifier");
+    Class legacyExposedClass = objc_getClass("SBAppSwitcherContinuousExposeSwitcherModifier");
+    if ((exposedClass && object_getClass(proposed) == exposedClass) ||
+        (legacyExposedClass && object_getClass(proposed) == legacyExposedClass)) {
+        TPPreparePhoneSwitcherCompatibility();
+        if (!TPPhoneDeckClass) return proposed;
+        id deck = [[TPPhoneDeckClass alloc] init];
+        if (@available(iOS 26.0, *)) {
+            // iOS 26.0.x still returns a legacy switcher for non-flexible
+            // Stage Manager. Only modern windowing results need this adapter.
+            if (exposedClass && object_getClass(proposed) == exposedClass) {
+                if (!TPPhoneDeckWindowingClass) return proposed;
+                id adapter = [[TPPhoneDeckWindowingClass alloc] initWithSwitcherModifier:deck];
+                objc_setAssociatedObject(adapter, &TPPhoneDeckAssociation, deck, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                return adapter;
+            }
+        }
+        return deck ?: proposed;
+    }
+    // The native factory returns its cached modifier on subsequent events.
+    return proposed;
+}
+
+typedef id TPMainSwitcherFactoryFunction(id, SEL, NSInteger) NS_RETURNS_RETAINED;
+static TPMainSwitcherFactoryFunction *TPOriginalMainSwitcherFactory;
+static id TPPhoneMainSwitcherFactory(id self, SEL command, NSInteger mode) NS_RETURNS_RETAINED;
+static id TPPhoneMainSwitcherFactory(id self, SEL command, NSInteger mode) {
+    if (trollPadEnabled && !useiPadAppSwitcher && mode == 2) {
+        TPPreparePhoneSwitcherCompatibility();
+        if (TPPhoneDeckClass) return [[TPPhoneDeckClass alloc] init];
+    }
+    return TPOriginalMainSwitcherFactory(self, command, mode);
 }
 
 static BOOL canInstallStageManagerCapabilityHooks() {
@@ -402,14 +689,19 @@ static uint16_t forcePadIdiom = 0;
 %end
 %end
 
-%group TPFlexibleWindowingHooks
+%group TPAppSwitcherRawStyleHooks
 %hook SBAppSwitcherSettings
 - (NSInteger)switcherStyle {
+    if (!trollPadEnabled) return %orig;
+    if (!useiPadAppSwitcher) return 1;
     // iOS 26's controller factory reads the raw style before effectiveSwitcherStyle.
-    return trollPadEnabled ? 2 : %orig;
+    if (@available(iOS 26.0, *)) return 2;
+    return %orig;
 }
 %end
+%end
 
+%group TPFlexibleWindowingHooks
 %hook SBWindowScene
 - (BOOL)supportsMultitasking {
     return trollPadEnabled ? YES : %orig;
@@ -666,22 +958,16 @@ static uint16_t forcePadIdiom = 0;
 %hook SBFluidSwitcherViewController
 // Use iPadOS app switching animation instead
 - (BOOL)isDevicePad {
-    return trollPadEnabled ? pref.useiPadAppSwitchingAnimation : %orig;
+    return trollPadEnabled ? (useiPadAppSwitcher && pref.useiPadAppSwitchingAnimation) : %orig;
 }
 
-// Restore number of grid to 1
-/*
-- (NSUInteger)numberOfRowsInGridSwitcher {
-    return 1;
-}
-*/
 %end
 
 // Fix truncated app name in app switcher
 %hook SBAppSwitcherSettings
 - (void)setDefaultValues {
     %orig;
-    if (!trollPadEnabled) {
+    if (!trollPadEnabled || !useiPadAppSwitcher) {
         return;
     }
     self.spacingBetweenLeadingEdgeAndIcon = 0;
@@ -1022,31 +1308,39 @@ static uint16_t forcePadIdiom = 0;
 }
 %end
 
-// Force iPad app switcher, otherwise it will be broken
+%group TPInAppDockGestureHooks
+%hook SBFloatingDockBehaviorAssertion
+- (BOOL)gesturePossible {
+    return %orig || shouldRecoverInAppDockGesture(self);
+}
+%end
+%end
+
+// Switcher presentation is independent of the native window management mode.
 %hook SBAppSwitcherSettings
 - (NSInteger)effectiveSwitcherStyle {
-    return trollPadEnabled ? 2 : %orig;
+    return trollPadEnabled ? (useiPadAppSwitcher ? 2 : 1) : %orig;
 }
 
 // Scales the grid switcher
 - (void)setGridSwitcherPageScale:(CGFloat)arg1 {
-    return trollPadEnabled && pref.scaleGridSwitcher ? %orig(0.38) : %orig;
+    return trollPadEnabled && useiPadAppSwitcher && pref.scaleGridSwitcher ? %orig(0.38) : %orig;
 }
 
 - (void)setGridSwitcherVerticalNaturalSpacingPortrait:(CGFloat)arg1 {
-    return trollPadEnabled && pref.scaleGridSwitcher ? %orig(65) : %orig;
+    return trollPadEnabled && useiPadAppSwitcher && pref.scaleGridSwitcher ? %orig(65) : %orig;
 }
 
 - (void)setGridSwitcherVerticalNaturalSpacingLandscape:(CGFloat)arg1 {
-    return trollPadEnabled && pref.scaleGridSwitcher ? %orig(40) : %orig;
+    return trollPadEnabled && useiPadAppSwitcher && pref.scaleGridSwitcher ? %orig(40) : %orig;
 }
 
 - (void)setGridSwitcherHorizontalInterpageSpacingPortrait:(CGFloat)arg1 {
-    return trollPadEnabled && pref.scaleGridSwitcher ? %orig(30) : %orig;
+    return trollPadEnabled && useiPadAppSwitcher && pref.scaleGridSwitcher ? %orig(30) : %orig;
 }
 
 - (void)setGridSwitcherHorizontalInterpageSpacingLandscape:(CGFloat)arg1 {
-    return trollPadEnabled && pref.scaleGridSwitcher ? %orig(10) : %orig;
+    return trollPadEnabled && useiPadAppSwitcher && pref.scaleGridSwitcher ? %orig(10) : %orig;
 }
 %end
 
@@ -1150,7 +1444,37 @@ static BOOL shouldForceMultitaskingProperty(CFStringRef property) {
         trollPadPrefsChanged, CFSTR("com.kdt.trollpad/saved"), NULL,
         CFNotificationSuspensionBehaviorCoalesce);
     pref = [TPPrefsObserver new];
+    useiPadAppSwitcher = pref.useiPadAppSwitcher;
+    if (trollPadEnabled && !useiPadAppSwitcher) {
+        TPPreparePhoneSwitcherCompatibility();
+    }
     %init;
+    TPInstallWindowScaling(shouldScaleAppWindows);
+    if (NSProcessInfo.processInfo.operatingSystemVersion.majorVersion == 26 &&
+        canInstallInAppDockGestureHook()) {
+        %init(TPInAppDockGestureHooks);
+    }
+    if (class_getInstanceMethod(objc_getClass("SBAppSwitcherSettings"), @selector(switcherStyle))) {
+        %init(TPAppSwitcherRawStyleHooks);
+    }
+    Method phonePresentation = class_getInstanceMethod(objc_getClass("SBContinuousExposeRootSwitcherModifier"),
+        @selector(multitaskingModifierForEvent:));
+    if (phonePresentation && strcmp(method_getTypeEncoding(phonePresentation), "@24@0:8@16") == 0 &&
+        objc_getClass("SBDeckSwitcherModifier")) {
+        MSHookMessageEx(objc_getClass("SBContinuousExposeRootSwitcherModifier"),
+            @selector(multitaskingModifierForEvent:),
+            (IMP)TPPhoneContinuousExposeFactory, (IMP *)&TPOriginalContinuousExposeFactory);
+    }
+    if (@available(iOS 26.0, *)) {
+        Method mainPresentation = class_getInstanceMethod(objc_getClass("SBMainSwitcherRootSwitcherModifier"),
+            @selector(_newMultitaskingModifierForEnvironmentMode:));
+        if (mainPresentation && strcmp(method_getTypeEncoding(mainPresentation), "@24@0:8q16") == 0 &&
+            objc_getClass("SBDeckSwitcherModifier")) {
+            MSHookMessageEx(objc_getClass("SBMainSwitcherRootSwitcherModifier"),
+                @selector(_newMultitaskingModifierForEnvironmentMode:),
+                (IMP)TPPhoneMainSwitcherFactory, (IMP *)&TPOriginalMainSwitcherFactory);
+        }
+    }
 
     if (@available(iOS 26.0, *)) {
         Class windowSceneClass = objc_getClass("SBWindowScene");

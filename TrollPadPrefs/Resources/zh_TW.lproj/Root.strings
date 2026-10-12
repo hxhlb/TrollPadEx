@@ -33,3 +33,16 @@
 "This system option is applied after a respring." = "此系統選項會在重新啟動桌面後生效。";
 "Later" = "稍後";
 "Respring Now" = "立即重新啟動桌面";
+"Allow Smaller Windows" = "允許更小視窗";
+"iPad App Switcher" = "iPad App 切換器";
+"Community" = "社群";
+"Join Discord" = "加入 Discord 社群";
+"QQ Group: 1126594257 (Tap to Copy)" = "QQ 交流群：1126594257（點按複製）";
+"Banana Repository (Tap to Copy)" = "Banana 越獄源（點按複製）";
+"QQ Group Number Copied" = "QQ群號已複製";
+"Repository URL Copied" = "越獄源網址已複製";
+"Respring (Alternative)" = "備用 Respring";
+"If the top Respring fails, use this button." = "若頂部 Respring 無效，請使用此按鈕。";
+"Unable to Respring" = "無法 Respring";
+"SpringBoard could not be restarted. Use the respring option in your jailbreak app." = "未能重新啟動 SpringBoard，請使用越獄工具中的 Respring 功能。";
+"Allow app windows below the system minimum size in Stage Manager and Windowed Apps on iOS 26. Apps manage their own layouts; content is not scaled or stretched." = "在 iOS 26 的幕前調度和視窗化 App 模式中，允許視窗小於系統最小尺寸。由 App 自行調整佈局，不縮放或拉伸內容。";

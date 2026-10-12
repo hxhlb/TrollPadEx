@@ -1,16 +1,20 @@
 # iOS 26 support
 
-Branch: `ios26-support`. Latest local test package: `2.0.1+ios26.1-test3`.
-The release version in `control` is now `2.0.2`; nothing has been published.
-Test2's default-value correction and the VM's legacy-plugin crash isolation
-are documented in [IOS26-DOCK.md](IOS26-DOCK.md). The checks below describe the
-original test1 windowing validation.
+The release version is `2.0.3`, prepared on branch `TrollPadEx`. The functional
+regression uses test14; later test16 diagnostics identified the physical
+KillBackground13 conflict. Temporary Dock diagnostics are removed from the
+formal release. Current
+behavior and final regression results are in [SWITCHER.md](SWITCHER.md),
+[IOS26-SCALING.md](IOS26-SCALING.md) and [IOS26-DOCK.md](IOS26-DOCK.md).
+
+The validation below records the original iOS 26 port. Its package versions and
+VM PIDs are historical evidence, not instructions to install those old candidates.
 
 ## Native implementation
 
 iOS 26 uses a window management context and flexible windowing modifiers.
-`TweakSB.x` enables the native capability checks, supplies the raw grid switcher
-style required by the controller factory, and allows resizing in Windowed Apps
+`TweakSB.x` enables the native capability checks, supplies an explicit switcher
+style to the controller factory, and allows resizing in Windowed Apps
 as well as Stage Manager. The native settings continue to choose the mode.
 
 The side and mirror preferences target the new modifier classes. The
@@ -88,14 +92,14 @@ On this VM, install the dylib and `EdgeInput.plist` as
 To remove the fixture, remove those two files and restart SpringBoard.
 The temporary runtime diagnostic fixture is removed after validation.
 
-## Build test packages
+## Build both package schemes
 
 Run sequentially because both schemes share `.theos` staging. Save the Rootless
 artifact before cleaning for RootHide.
 
 ```sh
 make clean package THEOS=/Users/hades/theos THEOS_PACKAGE_SCHEME=rootless \
-  FINALPACKAGE=1 PACKAGE_VERSION=2.0.1+ios26.1-test1
+  FINALPACKAGE=1 PACKAGE_VERSION=2.0.3
 make clean package THEOS=/Users/hades/theos-roothide THEOS_PACKAGE_SCHEME=roothide \
-  FINALPACKAGE=1 PACKAGE_VERSION=2.0.1+ios26.1-test1
+  FINALPACKAGE=1 PACKAGE_VERSION=2.0.3
 ```

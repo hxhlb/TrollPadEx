@@ -33,3 +33,16 @@
 "This system option is applied after a respring." = "This system option is applied after a respring.";
 "Later" = "Later";
 "Respring Now" = "Respring Now";
+"Allow Smaller Windows" = "Allow Smaller Windows";
+"iPad App Switcher" = "iPad App Switcher";
+"Community" = "Community";
+"Join Discord" = "Join Discord";
+"QQ Group: 1126594257 (Tap to Copy)" = "QQ Group: 1126594257 (Tap to Copy)";
+"Banana Repository (Tap to Copy)" = "Banana Repository (Tap to Copy)";
+"QQ Group Number Copied" = "QQ Group Number Copied";
+"Repository URL Copied" = "Repository URL Copied";
+"Respring (Alternative)" = "Respring (Alternative)";
+"If the top Respring fails, use this button." = "If the top Respring fails, use this button.";
+"Unable to Respring" = "Unable to Respring";
+"SpringBoard could not be restarted. Use the respring option in your jailbreak app." = "SpringBoard could not be restarted. Use the respring option in your jailbreak app.";
+"Allow app windows below the system minimum size in Stage Manager and Windowed Apps on iOS 26. Apps manage their own layouts; content is not scaled or stretched." = "Allow app windows below the system minimum size in Stage Manager and Windowed Apps on iOS 26. Apps manage their own layouts; content is not scaled or stretched.";

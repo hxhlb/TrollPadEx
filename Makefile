@@ -13,7 +13,7 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = TrollPadSB TrollPadUI
 
-TrollPadSB_FILES = TweakSB.x TrollPadPrefs/NSUserDefaults+hook.x TPPrefsObserver.m
+TrollPadSB_FILES = TweakSB.x TrollPadPrefs/NSUserDefaults+hook.x TPPrefsObserver.m TPWindowScaling.m
 TrollPadSB_CFLAGS = -fobjc-arc
 TrollPadSB_LIBRARIES = MobileGestalt
 # TrollPad_PRIVATE_FRAMEWORKS = BoardServices SpringBoard

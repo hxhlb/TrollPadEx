@@ -1,6 +1,17 @@
 #import <Foundation/Foundation.h>
 #import <Preferences/PSSpecifier.h>
 #import "TPPRootListController.h"
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <errno.h>
+#ifdef THEOS_PACKAGE_SCHEME_ROOTHIDE
+#import <roothide.h>
+#else
+#import <rootless.h>
+#endif
+
+extern char **environ;
 
 #define PREF_PATH @"/var/mobile/Library/Preferences/com.kdt.trollpad.plist"
 
@@ -20,6 +31,7 @@ static NSString *TPLocalized(NSString *key) {
 
 @interface TPPRootListController ()
 @property(nonatomic, assign) BOOL didShowRespringRequiredAlert;
+@property(nonatomic, assign) BOOL fallbackRespringPending;
 @end
 
 static id TPCopySpringBoardPreference(NSString *key) {
@@ -68,6 +80,7 @@ static BOOL TPPreferenceRequiresRespring(NSString *key) {
             @"SBExtendedDisplayContentsScaleAndDontFileRadars",
             @"SBAppLibraryInDockEnabled",
             @"SBRecentsEnabled",
+            @"TPUseiPadAppSwitcher",
         ]];
     });
     return [keys containsObject:key];
@@ -106,12 +119,28 @@ static BOOL TPPreferenceRequiresRespring(NSString *key) {
     if (stageManagerSideSpecifier) {
         [self reloadSpecifier:stageManagerSideSpecifier animated:YES];
     }
+    BOOL useiPadSwitcher = TPReadSpringBoardBool(@"TPUseiPadAppSwitcher", YES);
+    for (PSSpecifier *specifier in _specifiers) {
+        NSString *key = [specifier propertyForKey:PSKeyNameKey];
+        if ([key isEqualToString:@"TPScaleGridSwitcher"] ||
+            [key isEqualToString:@"TPUseiPadAppSwitchingAnimation"] ||
+            [key isEqualToString:@"TPMirrorStageManagerSwitcher"]) {
+            [specifier setProperty:@(useiPadSwitcher) forKey:PSEnabledKey];
+            [self reloadSpecifier:specifier animated:YES];
+        }
+    }
 }
 
 - (NSArray *)specifiers {
     if (!_specifiers) {
         NSMutableArray *specifiers = [[self loadSpecifiersFromPlistName:@"Root" target:self] mutableCopy];
         _specifiers = specifiers;
+        if (NSProcessInfo.processInfo.operatingSystemVersion.majorVersion != 26) {
+            NSIndexSet *scalingRows = [specifiers indexesOfObjectsPassingTest:^BOOL(PSSpecifier *specifier, NSUInteger index, BOOL *stop) {
+                return [[specifier propertyForKey:@"id"] hasPrefix:@"APP_WINDOW_SCALING"];
+            }];
+            [specifiers removeObjectsAtIndexes:scalingRows];
+        }
         self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:TPLocalized(@"Respring") style:UIBarButtonItemStylePlain target:self action:@selector(respring)];
 
         if (@available(iOS 17.0, *)) {
@@ -167,6 +196,9 @@ static BOOL TPPreferenceRequiresRespring(NSString *key) {
         ![previousValue isEqual:value] && TPIsStageManagerEnabled();
 
     [super setPreferenceValue:value specifier:specifier];
+    if ([key isEqualToString:@"TPUseiPadAppSwitcher"]) {
+        [self refreshStageManagerControls];
+    }
 
     if (restartStageManager) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)),
@@ -213,6 +245,66 @@ static BOOL TPPreferenceRequiresRespring(NSString *key) {
     NSURL *returnURL = [NSURL URLWithString:@"prefs:root=TrollPad"];
     SBSRelaunchAction *action = [NSClassFromString(@"SBSRelaunchAction") actionWithReason:@"RestartRenderServer" options:0 targetURL:returnURL];
     [[NSClassFromString(@"FBSSystemService") sharedService] sendActions:[NSSet setWithObject:action] withResult:nil];
+}
+
+- (void)fallbackRespring {
+    if (self.fallbackRespringPending) return;
+    self.fallbackRespringPending = YES;
+#ifdef THEOS_PACKAGE_SCHEME_ROOTHIDE
+    NSString *path = jbroot(@"/usr/bin/killall");
+#else
+    NSString *path = ROOT_PATH_NS(@"/usr/bin/killall");
+#endif
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *executable = path;
+        if (access(executable.fileSystemRepresentation, X_OK) != 0 && access("/usr/bin/killall", X_OK) == 0) {
+            executable = @"/usr/bin/killall";
+        }
+        char *arguments[] = {(char *)executable.fileSystemRepresentation, "-9", "SpringBoard", NULL};
+        pid_t child;
+        int error = posix_spawn(&child, executable.fileSystemRepresentation, NULL, NULL, arguments, environ);
+        BOOL success = NO;
+        if (!error) {
+            int status = 0;
+            pid_t waited;
+            do { waited = waitpid(child, &status, 0); } while (waited == -1 && errno == EINTR);
+            success = waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+            if (!success) NSLog(@"[TrollPadEx] Fallback respring failed: waited=%d status=%d", waited, status);
+        } else {
+            NSLog(@"[TrollPadEx] Could not start killall: %d", error);
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            TPPRootListController *controller = weakSelf;
+            controller.fallbackRespringPending = NO;
+            if (success || !controller) return;
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:TPLocalized(@"Unable to Respring")
+                message:TPLocalized(@"SpringBoard could not be restarted. Use the respring option in your jailbreak app.")
+                preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:TPLocalized(@"OK") style:UIAlertActionStyleDefault handler:nil]];
+            [controller presentViewController:alert animated:YES completion:nil];
+        });
+    });
+}
+
+- (void)openDiscord {
+    [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://discord.gg/PraZNv2ZE"] options:@{} completionHandler:nil];
+}
+
+- (void)copyQQGroupNumber {
+    UIPasteboard.generalPasteboard.string = @"1126594257";
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:TPLocalized(@"QQ Group Number Copied")
+        message:@"1126594257" preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:TPLocalized(@"OK") style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)copyRepositoryURL {
+    UIPasteboard.generalPasteboard.string = @"https://iyaway.github.io";
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:TPLocalized(@"Repository URL Copied")
+        message:@"https://iyaway.github.io" preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:TPLocalized(@"OK") style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 @end

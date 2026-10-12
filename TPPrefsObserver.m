@@ -12,10 +12,12 @@ static void TPPrefsChanged(CFNotificationCenterRef center, void *observer, CFStr
     [self observeKey:@"TPForceEnableMedusaForLandscapeOnlyApps"];
     [self observeKey:@"TPHideStageManagerResizeCorners"];
     [self observeKey:@"TPUseiPadAppSwitchingAnimation"];
+    [self observeKey:@"TPUseiPadAppSwitcher"];
     [self observeKey:@"TPIsFloatingDockSupported"];
     [self observeKey:@"TPScaleGridSwitcher"];
     [self observeKey:@"TPStageManagerSide"];
     [self observeKey:@"TPMirrorStageManagerSwitcher"];
+    [self observeKey:@"TPScaleAppWindows"];
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
         (__bridge const void *)self, TPPrefsChanged, CFSTR("com.kdt.trollpad/saved"),
         NULL, CFNotificationSuspensionBehaviorCoalesce);
@@ -45,6 +47,8 @@ keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)contex
     self.forceEnableMedusaForLandscapeOnlyApps = [defaults boolForKey:@"TPForceEnableMedusaForLandscapeOnlyApps"];
     self.hideStageManagerResizeCorners = [defaults boolForKey:@"TPHideStageManagerResizeCorners"];
     self.useiPadAppSwitchingAnimation = [defaults boolForKey:@"TPUseiPadAppSwitchingAnimation"];
+    id iPadAppSwitcher = [defaults objectForKey:@"TPUseiPadAppSwitcher"];
+    self.useiPadAppSwitcher = iPadAppSwitcher ? [iPadAppSwitcher boolValue] : YES;
     if (@available(iOS 26.0, *)) {
         id floatingDock = [defaults objectForKey:@"TPIsFloatingDockSupported"];
         self.isFloatingDockSupported = floatingDock ? [floatingDock boolValue] : YES;
@@ -52,6 +56,7 @@ keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)contex
         self.isFloatingDockSupported = [defaults boolForKey:@"TPIsFloatingDockSupported"];
     }
     self.scaleGridSwitcher = [defaults boolForKey:@"TPScaleGridSwitcher"];
+    self.scaleAppWindows = [defaults boolForKey:@"TPScaleAppWindows"];
     self.stageManagerSide = [defaults integerForKey:@"TPStageManagerSide"];
     id mirrorAppSwitcher = [defaults objectForKey:@"TPMirrorStageManagerSwitcher"];
     self.mirrorAppSwitcher = mirrorAppSwitcher ? [mirrorAppSwitcher boolValue] : YES;

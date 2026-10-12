@@ -121,6 +121,30 @@
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
+			<key>id</key>
+			<string>APP_WINDOW_SCALING_GROUP</string>
+			<key>footerText</key>
+			<string>Allow app windows below the system minimum size in Stage Manager and Windowed Apps on iOS 26. Apps manage their own layouts; content is not scaled or stretched.</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.apple.springboard</string>
+			<key>id</key>
+			<string>APP_WINDOW_SCALING</string>
+			<key>key</key>
+			<string>TPScaleAppWindows</string>
+			<key>label</key>
+			<string>Allow Smaller Windows</string>
+			<key>PostNotification</key>
+			<string>com.kdt.trollpad/saved</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
 			<key>label</key>
 			<string>External Display content scale</string>
 		</dict>
@@ -197,6 +221,20 @@
 			<string>TPForceEnableMedusaForLandscapeOnlyApps</string>
 			<key>label</key>
 			<string>Force resizable window for games</string>
+			<key>PostNotification</key>
+			<string>com.kdt.trollpad/saved</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.apple.springboard</string>
+			<key>key</key>
+			<string>TPUseiPadAppSwitcher</string>
+			<key>label</key>
+			<string>iPad App Switcher</string>
 			<key>PostNotification</key>
 			<string>com.kdt.trollpad/saved</string>
 		</dict>
@@ -309,6 +347,52 @@
 			<string>Twitter.png</string>
 			<key>label</key>
 			<string>@TranKha50277352</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>Community</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>Join Discord</string>
+			<key>action</key>
+			<string>openDiscord</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>QQ Group: 1126594257 (Tap to Copy)</string>
+			<key>action</key>
+			<string>copyQQGroupNumber</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>Banana Repository (Tap to Copy)</string>
+			<key>action</key>
+			<string>copyRepositoryURL</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>Respring</string>
+			<key>footerText</key>
+			<string>If the top Respring fails, use this button.</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>Respring (Alternative)</string>
+			<key>action</key>
+			<string>fallbackRespring</string>
 		</dict>
 	</array>
 	<key>title</key>
