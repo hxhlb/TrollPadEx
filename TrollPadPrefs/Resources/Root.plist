@@ -293,6 +293,8 @@
 			<string>SBAppLibraryInDockEnabled</string>
 			<key>label</key>
 			<string>Show App Library in Dock</string>
+			<key>PostNotification</key>
+			<string>com.kdt.trollpad/saved</string>
 		</dict>
 		<dict>
 			<key>cell</key>

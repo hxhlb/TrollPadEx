@@ -6,6 +6,7 @@
 #import "SpringBoard.h"
 #import "TPPrefsObserver.h"
 #import "TPWindowScaling.h"
+#import "TPDockLibrary.h"
 #import "UIKitPrivate.h"
 
 #include <assert.h>
@@ -27,6 +28,10 @@ static BOOL trollPadEnabled;
 static BOOL useiPadAppSwitcher;
 static void TPRefreshWindowingGestures(void);
 static id (*TPSettingForSelector)(Class, SEL);
+
+static BOOL TPShouldHideDockLibrary(void) {
+    return trollPadEnabled && pref && !pref.appLibraryInDockEnabled;
+}
 
 static void loadTrollPadEnabled() {
     Boolean keyExists = false;
@@ -1449,6 +1454,7 @@ static BOOL shouldForceMultitaskingProperty(CFStringRef property) {
         TPPreparePhoneSwitcherCompatibility();
     }
     %init;
+    TPInstallDockLibraryHooks(TPShouldHideDockLibrary);
     TPInstallWindowScaling(shouldScaleAppWindows);
     if (NSProcessInfo.processInfo.operatingSystemVersion.majorVersion == 26 &&
         canInstallInAppDockGestureHook()) {

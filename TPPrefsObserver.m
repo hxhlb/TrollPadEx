@@ -14,6 +14,7 @@ static void TPPrefsChanged(CFNotificationCenterRef center, void *observer, CFStr
     [self observeKey:@"TPUseiPadAppSwitchingAnimation"];
     [self observeKey:@"TPUseiPadAppSwitcher"];
     [self observeKey:@"TPIsFloatingDockSupported"];
+    [self observeKey:@"SBAppLibraryInDockEnabled"];
     [self observeKey:@"TPScaleGridSwitcher"];
     [self observeKey:@"TPStageManagerSide"];
     [self observeKey:@"TPMirrorStageManagerSwitcher"];
@@ -55,6 +56,8 @@ keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)contex
     } else {
         self.isFloatingDockSupported = [defaults boolForKey:@"TPIsFloatingDockSupported"];
     }
+    id library = [defaults objectForKey:@"SBAppLibraryInDockEnabled"];
+    self.appLibraryInDockEnabled = library ? [library boolValue] : YES;
     self.scaleGridSwitcher = [defaults boolForKey:@"TPScaleGridSwitcher"];
     self.scaleAppWindows = [defaults boolForKey:@"TPScaleAppWindows"];
     self.stageManagerSide = [defaults integerForKey:@"TPStageManagerSide"];
