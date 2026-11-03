@@ -27,6 +27,7 @@ def contract(source):
 static BOOL trollPadEnabled, useiPadAppSwitcher, missingDeck, wrongABI, missingFactory;
 static NSInteger testMajor;
 static unsigned hookCalls, originalCalls, floorCalls;
+static id nativeMultitaskingFixture;
 static Class TPPhoneDeckClass;
 @interface SBDeckSwitcherModifier : NSObject
 @property(nonatomic,weak) id parentModifier;
@@ -41,13 +42,18 @@ static id nativeFloor(id root);
 @interface SBMainSwitcherRootSwitcherModifier : NSObject
 @property(nonatomic,strong) id floorFixture;
 @property(nonatomic,strong) SBDeckSwitcherModifier *currentFloor;
+@property(nonatomic,strong) SBDeckSwitcherModifier *currentMultitasking;
 - (id)floorModifier;
+- (id)multitaskingModifier;
+- (id)multitaskingModifierForEvent:(id)event;
 - (id)_newMultitaskingModifierForEnvironmentMode:(NSInteger)mode;
 - (id)floorModifierForTransitionEvent:(id)event;
 - (id)floorModifierForGestureEvent:(id)event;
 @end
 @implementation SBMainSwitcherRootSwitcherModifier
 - (id)floorModifier { return self.currentFloor; }
+- (id)multitaskingModifier { return self.currentMultitasking; }
+- (id)multitaskingModifierForEvent:(id)event { return nativeMultitaskingFixture; }
 - (id)_newMultitaskingModifierForEnvironmentMode:(NSInteger)mode {
     originalCalls++;
     // iOS 17.3.1 IPSW: mode 2 precedes the effectiveSwitcherStyle check.

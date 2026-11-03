@@ -481,12 +481,55 @@ static id TPPhoneMainSwitcherFactory(id self, SEL command, NSInteger mode) {
     return TPOriginalMainSwitcherFactory(self, command, mode);
 }
 
-static id TPPhoneLegacyFloor(id root, id proposed) {
-    if (!proposed || !trollPadEnabled || useiPadAppSwitcher ||
-        object_getClass(proposed) != objc_getClass("SBMixedGridSwitcherModifier")) return proposed;
+static Ivar TPPhoneLegacyEnvironmentIvar, TPPhoneLegacyFloatingIvar, TPPhoneLegacyPeekIvar;
+static BOOL TPPhoneLegacyHomeFloorReady;
+static id (*TPOriginalLegacyMultitaskingFactory)(id, SEL, id);
+static id TPPhoneLegacyMultitaskingFactory(id self, SEL command, id event) {
+    id proposed = TPOriginalLegacyMultitaskingFactory(self, command, event);
+    if (proposed || !trollPadEnabled || useiPadAppSwitcher || !TPPhoneLegacyHomeFloorReady ||
+        object_getClass(self) != objc_getClass("SBMainSwitcherRootSwitcherModifier")) return proposed;
     TPPreparePhoneSwitcherCompatibility();
     if (!TPPhoneDeckClass) return proposed;
-    id deck = ((id (*)(id, SEL))objc_msgSend)(root, @selector(floorModifier));
+    id deck = ((id (*)(id, SEL))objc_msgSend)(self, @selector(multitaskingModifier));
+    if (object_getClass(deck) == TPPhoneDeckClass &&
+        ((id (*)(id, SEL))objc_msgSend)(deck, @selector(parentModifier)) == self &&
+        ((NSInteger (*)(id, SEL))objc_msgSend)(deck, @selector(state)) == 0) return deck;
+    return [[TPPhoneDeckClass alloc] init];
+}
+
+static id TPPhoneLegacyFloor(id root, id proposed, id event) {
+    if (!proposed || !trollPadEnabled || useiPadAppSwitcher) return proposed;
+    if (TPPhoneLegacyHomeFloorReady &&
+        object_getClass(root) == objc_getClass("SBMainSwitcherRootSwitcherModifier") &&
+        object_getClass(proposed) == objc_getClass("SBMainSwitcherRoutingSwitcherModifier")) {
+        NSInteger mode = 0;
+        BOOL floating = NO, peek = NO;
+        if ([event isKindOfClass:objc_getClass("SBTransitionSwitcherModifierEvent")]) {
+            mode = ((NSInteger (*)(id, SEL))objc_msgSend)(event, @selector(toEnvironmentMode));
+            floating = ((BOOL (*)(id, SEL))objc_msgSend)(event, @selector(toFloatingSwitcherVisible));
+            NSInteger configuration = ((NSInteger (*)(id, SEL))objc_msgSend)(event, @selector(toPeekConfiguration));
+            peek = (configuration & ~1L) == 2;
+        } else {
+            const char *bytes = (__bridge const void *)root;
+            memcpy(&mode, bytes + ivar_getOffset(TPPhoneLegacyEnvironmentIvar), sizeof(mode));
+            memcpy(&floating, bytes + ivar_getOffset(TPPhoneLegacyFloatingIvar), sizeof(floating));
+            memcpy(&peek, bytes + ivar_getOffset(TPPhoneLegacyPeekIvar), sizeof(peek));
+        }
+        if (mode == 1 && !floating && !peek) {
+            Class homeClass = objc_getClass("_SBHomeScreenFloorSwitcherModifier");
+            id floor = ((id (*)(id, SEL))objc_msgSend)(root, @selector(floorModifier));
+            if (object_getClass(floor) == homeClass &&
+                ((id (*)(id, SEL))objc_msgSend)(floor, @selector(parentModifier)) == root &&
+                ((NSInteger (*)(id, SEL))objc_msgSend)(floor, @selector(state)) == 0) return floor;
+            return [[homeClass alloc] init] ?: proposed;
+        }
+    }
+    if (object_getClass(proposed) != objc_getClass("SBMixedGridSwitcherModifier")) return proposed;
+    TPPreparePhoneSwitcherCompatibility();
+    if (!TPPhoneDeckClass) return proposed;
+    BOOL phoneSubtree = TPPhoneLegacyHomeFloorReady && object_getClass(root) == objc_getClass("SBMainSwitcherRootSwitcherModifier");
+    id deck = ((id (*)(id, SEL))objc_msgSend)(root,
+        phoneSubtree ? @selector(multitaskingModifier) : @selector(floorModifier));
     // Removed modifiers are completed and their query chain is disconnected.
     // Reuse only the active floor still owned by this root, never a saved copy.
     if (object_getClass(deck) == TPPhoneDeckClass &&
@@ -497,12 +540,12 @@ static id TPPhoneLegacyFloor(id root, id proposed) {
 
 static id (*TPOriginalLegacyFloorTransition)(id, SEL, id);
 static id TPPhoneLegacyFloorTransition(id self, SEL command, id event) {
-    return TPPhoneLegacyFloor(self, TPOriginalLegacyFloorTransition(self, command, event));
+    return TPPhoneLegacyFloor(self, TPOriginalLegacyFloorTransition(self, command, event), event);
 }
 
 static id (*TPOriginalLegacyFloorGesture)(id, SEL, id);
 static id TPPhoneLegacyFloorGesture(id self, SEL command, id event) {
-    return TPPhoneLegacyFloor(self, TPOriginalLegacyFloorGesture(self, command, event));
+    return TPPhoneLegacyFloor(self, TPOriginalLegacyFloorGesture(self, command, event), event);
 }
 
 @interface NSObject (TPPhoneLegacyAnimations)
@@ -512,11 +555,12 @@ static id TPPhoneLegacyFloorGesture(id self, SEL command, id event) {
 - (void)setResignsTransitionIntoAppSwitcher:(BOOL)value;
 @end
 
-static Ivar TPPhoneLegacyEnvironmentIvar;
 static BOOL TPPrepareLegacyPhoneAnimations(void) {
     const struct { const char *className; const char *selector; const char *types; } methods[] = {
         {"SBMainSwitcherRootSwitcherModifier", "gestureModifierForGestureEvent:", "@24@0:8@16"},
         {"SBMainSwitcherRootSwitcherModifier", "transitionModifierForMainTransitionEvent:", "@24@0:8@16"},
+        {"SBMainSwitcherRootSwitcherModifier", "multitaskingModifierForEvent:", "@24@0:8@16"},
+        {"SBMainSwitcherRootSwitcherModifier", "multitaskingModifier", "@16@0:8"},
         {"SBHomeGestureRootSwitcherModifier", "initWithStartingEnvironmentMode:multitaskingModifier:", "@32@0:8q16@24"},
         {"SBHomeGestureRootSwitcherModifier", "setResignsTransitionIntoAppSwitcher:", "v20@0:8B16"},
         {"SBHomeToDeckSwitcherModifier", "initWithTransitionID:direction:multitaskingModifier:", "@40@0:8@16q24@32"},
@@ -524,6 +568,7 @@ static BOOL TPPrepareLegacyPhoneAnimations(void) {
         {"SBGestureSwitcherModifierEvent", "gestureType", "q16@0:8"},
         {"SBTransitionSwitcherModifierEvent", "fromEnvironmentMode", "q16@0:8"},
         {"SBTransitionSwitcherModifierEvent", "toEnvironmentMode", "q16@0:8"},
+        {"SBTransitionSwitcherModifierEvent", "toFloatingSwitcherVisible", "B16@0:8"},
         {"SBTransitionSwitcherModifierEvent", "fromAppLayout", "@16@0:8"},
         {"SBTransitionSwitcherModifierEvent", "toAppLayout", "@16@0:8"},
         {"SBTransitionSwitcherModifierEvent", "fromFloatingAppLayout", "@16@0:8"},
@@ -536,6 +581,9 @@ static BOOL TPPrepareLegacyPhoneAnimations(void) {
         {"SBTransitionSwitcherModifierEvent", "isBannerUnfurlTransition", "B16@0:8"},
         {"SBTransitionSwitcherModifierEvent", "isContinuityTransition", "B16@0:8"},
         {"SBTransitionSwitcherModifierEvent", "isMoveDisplaysTransition", "B16@0:8"},
+        {"_SBHomeScreenFloorSwitcherModifier", "init", "@16@0:8"},
+        {"_SBHomeScreenFloorSwitcherModifier", "parentModifier", "@16@0:8"},
+        {"_SBHomeScreenFloorSwitcherModifier", "state", "q16@0:8"},
     };
     for (NSUInteger i = 0; i < sizeof(methods) / sizeof(methods[0]); i++) {
         Method method = class_getInstanceMethod(objc_getClass(methods[i].className), sel_registerName(methods[i].selector));
@@ -543,9 +591,17 @@ static BOOL TPPrepareLegacyPhoneAnimations(void) {
     }
     Class root = objc_getClass("SBMainSwitcherRootSwitcherModifier");
     Ivar mode = class_getInstanceVariable(root, "_environmentMode");
+    Ivar floating = class_getInstanceVariable(root, "_floatingSwitcherVisible");
+    Ivar peek = class_getInstanceVariable(root, "_isInPeekState");
     if (!mode || strcmp(ivar_getTypeEncoding(mode), "q") != 0 || ivar_getOffset(mode) < 0 ||
         ivar_getOffset(mode) + sizeof(NSInteger) > class_getInstanceSize(root)) return NO;
+    if (!floating || !peek || strcmp(ivar_getTypeEncoding(floating), "B") != 0 ||
+        strcmp(ivar_getTypeEncoding(peek), "B") != 0 || ivar_getOffset(floating) < 0 || ivar_getOffset(peek) < 0 ||
+        ivar_getOffset(floating) + sizeof(BOOL) > class_getInstanceSize(root) ||
+        ivar_getOffset(peek) + sizeof(BOOL) > class_getInstanceSize(root)) return NO;
     TPPhoneLegacyEnvironmentIvar = mode;
+    TPPhoneLegacyFloatingIvar = floating;
+    TPPhoneLegacyPeekIvar = peek;
     return YES;
 }
 
@@ -1630,10 +1686,13 @@ static BOOL shouldForceMultitaskingProperty(CFStringRef property) {
                 (IMP)TPPhoneLegacyFloorGesture, (IMP *)&TPOriginalLegacyFloorGesture);
         }
         if (canSelectActiveFloor && TPPrepareLegacyPhoneAnimations()) {
+            MSHookMessageEx(legacyRoot, @selector(multitaskingModifierForEvent:),
+                (IMP)TPPhoneLegacyMultitaskingFactory, (IMP *)&TPOriginalLegacyMultitaskingFactory);
             MSHookMessageEx(legacyRoot, @selector(transitionModifierForMainTransitionEvent:),
                 (IMP)TPPhoneLegacyTransition, (IMP *)&TPOriginalLegacyPhoneTransition);
             MSHookMessageEx(legacyRoot, @selector(gestureModifierForGestureEvent:),
                 (IMP)TPPhoneLegacyGesture, (IMP *)&TPOriginalLegacyPhoneGesture);
+            TPPhoneLegacyHomeFloorReady = YES;
         }
     }
 

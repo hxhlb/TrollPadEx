@@ -13,12 +13,20 @@ static id nativeTransition, nativeGesture;
 @property(strong) id fromAppLayout,toAppLayout,fromFloatingAppLayout,toFloatingAppLayout;
 @property(strong) id fromAppExposeBundleID,toAppExposeBundleID,transitionID;
 @property BOOL isBannerUnfurlTransition,isContinuityTransition,isMoveDisplaysTransition;
+@property BOOL toFloatingSwitcherVisible;
 @end
 @implementation SBTransitionSwitcherModifierEvent @end
 @interface SBGestureSwitcherModifierEvent : NSObject
 @property NSInteger gestureType;
 @end
 @implementation SBGestureSwitcherModifierEvent @end
+@interface SBMainSwitcherRoutingSwitcherModifier : NSObject @end
+@implementation SBMainSwitcherRoutingSwitcherModifier @end
+@interface _SBHomeScreenFloorSwitcherModifier : NSObject
+@property(nonatomic,weak) id parentModifier;
+@property NSInteger state;
+@end
+@implementation _SBHomeScreenFloorSwitcherModifier @end
 @interface SBHomeGestureRootSwitcherModifier : NSObject
 @property NSInteger mode;
 @property(strong) id deck;
@@ -66,8 +74,8 @@ MAIN = r'''
 int main(void){@autoreleasepool{
     Class rootClass=SBMainSwitcherRootSwitcherModifier.class;
     SEL selectors[]={@selector(_newMultitaskingModifierForEnvironmentMode:),@selector(floorModifierForTransitionEvent:),
-        @selector(floorModifierForGestureEvent:),@selector(transitionModifierForMainTransitionEvent:),@selector(gestureModifierForGestureEvent:)};
-    IMP originals[5];for(unsigned i=0;i<5;i++)originals[i]=class_getMethodImplementation(rootClass,selectors[i]);
+        @selector(floorModifierForGestureEvent:),@selector(transitionModifierForMainTransitionEvent:),@selector(gestureModifierForGestureEvent:),@selector(multitaskingModifierForEvent:)};
+    IMP originals[6];for(unsigned i=0;i<6;i++)originals[i]=class_getMethodImplementation(rootClass,selectors[i]);
     for(NSNumber *version in @[@16,@17,@18,@26,@27]){
         testMajor=version.integerValue;hookCalls=0;install();
         SBMainSwitcherRootSwitcherModifier *root=[rootClass new];root->_environmentMode=1;
@@ -76,6 +84,23 @@ int main(void){@autoreleasepool{
         event.fromEnvironmentMode=1;event.toEnvironmentMode=2;
         for(unsigned mask=0;mask<4;mask++){
             trollPadEnabled=mask&1;useiPadAppSwitcher=!!(mask&2);BOOL active=testMajor==17&&trollPadEnabled&&!useiPadAppSwitcher;
+            SBDeckSwitcherModifier *subtree=[root multitaskingModifierForEvent:nil];
+            CHECK(active?[subtree isMemberOfClass:SBDeckSwitcherModifier.class]:subtree==nil,"native phone Deck subtree present during Home idle");
+            if(active){root.currentMultitasking=subtree;subtree.parentModifier=root;}
+            else if(root.currentMultitasking){root.currentMultitasking.state=1;root.currentMultitasking.parentModifier=nil;root.currentMultitasking=nil;}
+            root.floorFixture=SBMainSwitcherRoutingSwitcherModifier.new;
+            event.toEnvironmentMode=1;event.toPeekConfiguration=1;
+            id home=[root floorModifierForTransitionEvent:event];
+            CHECK(active?[home isMemberOfClass:_SBHomeScreenFloorSwitcherModifier.class]:home==root.floorFixture,
+                "ordinary idle Home uses the native phone Home floor instead of the iPad route");
+            if(active){
+                ((_SBHomeScreenFloorSwitcherModifier *)home).parentModifier=root;
+                root.currentFloor=(SBDeckSwitcherModifier *)home;
+                CHECK([root floorModifierForGestureEvent:nil]==home,"active Home floor reused before re-entry");
+                CHECK([root multitaskingModifierForEvent:nil]==subtree&&subtree.state==0,"Home floor does not retire the native Deck child");
+                root.floorFixture=SBMixedGridSwitcherModifier.new;
+                CHECK([root floorModifierForGestureEvent:nil]==subtree,"switcher floor uses the same native Deck child");
+            }
             SBHomeGestureRootSwitcherModifier *g=[root gestureModifierForGestureEvent:gesture];
             CHECK(active?[g isMemberOfClass:SBHomeGestureRootSwitcherModifier.class]:g==nil,"bottom-edge gesture needs a native Deck driver");
             if(active)CHECK(g.mode==1&&g.resignsTransitionIntoAppSwitcher&&[g.deck isMemberOfClass:SBDeckSwitcherModifier.class],"native gesture initializer/flag/Deck preserved");
@@ -93,12 +118,39 @@ int main(void){@autoreleasepool{
                 }
             }
         }
-        CHECK(hookCalls==(testMajor==17?5:(testMajor>=26?1:0)),"animation hooks confined to iOS17; other installation paths unchanged");
+        CHECK(hookCalls==(testMajor==17?6:(testMajor>=26?1:0)),"phone subtree and animation hooks confined to iOS17; other paths unchanged");
         trollPadEnabled=YES;useiPadAppSwitcher=NO;
+        root.floorFixture=SBMainSwitcherRoutingSwitcherModifier.new;
+        event.toEnvironmentMode=1;event.toPeekConfiguration=1;
+        event.toFloatingSwitcherVisible=YES;
+        CHECK([root floorModifierForTransitionEvent:event]==root.floorFixture,"Home with floating switcher keeps native window route");
+        event.toFloatingSwitcherVisible=NO;event.toPeekConfiguration=2;
+        CHECK([root floorModifierForTransitionEvent:event]==root.floorFixture,"Home Peek keeps native route");
+        event.toPeekConfiguration=1;event.toEnvironmentMode=3;
+        CHECK([root floorModifierForTransitionEvent:event]==root.floorFixture,"App mode keeps native window route");
+        root->_environmentMode=1;root->_floatingSwitcherVisible=YES;
+        CHECK([root floorModifierForGestureEvent:nil]==root.floorFixture,"gesture Home with floating switcher keeps native route");
+        root->_floatingSwitcherVisible=NO;root->_isInPeekState=YES;
+        CHECK([root floorModifierForGestureEvent:nil]==root.floorFixture,"gesture Home Peek keeps native route");
+        root->_isInPeekState=NO;
+        if(testMajor==17){
+            _SBHomeScreenFloorSwitcherModifier *old=[root floorModifierForGestureEvent:nil];
+            old.state=1;old.parentModifier=nil;root.currentFloor=nil;
+            id fresh=[root floorModifierForGestureEvent:nil];
+            CHECK([fresh isMemberOfClass:_SBHomeScreenFloorSwitcherModifier.class]&&fresh!=old,
+                "released/completed Home floor is not kept alive or reused");
+            SBDeckSwitcherModifier *retired=root.currentMultitasking;
+            retired.state=1;retired.parentModifier=nil;root.currentMultitasking=nil;
+            SBDeckSwitcherModifier *replacement=[root multitaskingModifierForEvent:nil];
+            CHECK(replacement!=retired&&replacement.state==0,"retired Deck subtree is rebuilt through the native factory");
+        }
         event.fromEnvironmentMode=1;event.toEnvironmentMode=2;
         id native=NSObject.new;nativeTransition=native;nativeGesture=native;
         CHECK([root transitionModifierForMainTransitionEvent:event]==native&&[root gestureModifierForGestureEvent:gesture]==native,"non-nil native specialized result retains identity");
         nativeTransition=nil;nativeGesture=nil;
+        nativeMultitaskingFixture=native;
+        CHECK([root multitaskingModifierForEvent:nil]==native,"non-nil native subtree preserved");
+        nativeMultitaskingFixture=nil;
         for(NSString *key in @[@"fromFloatingAppLayout",@"toFloatingAppLayout",@"fromAppExposeBundleID",@"toAppExposeBundleID"]){
             [event setValue:native forKey:key];CHECK([root transitionModifierForMainTransitionEvent:event]==nil,"floating/App Expose transitions untouched");[event setValue:nil forKey:key];
         }
@@ -115,9 +167,9 @@ int main(void){@autoreleasepool{
         root->_environmentMode=2;root.currentFloor=nil;CHECK([root gestureModifierForGestureEvent:gesture]==nil,"App Expose/non-Deck switcher gesture untouched");
         root.currentFloor=SBDeckSwitcherModifier.new;
         id g=[root gestureModifierForGestureEvent:gesture];CHECK(testMajor==17?g!=nil:g==nil,"active phone switcher gesture supported");
-        for(unsigned i=0;i<5;i++){Method m=class_getInstanceMethod(rootClass,selectors[i]);class_replaceMethod(rootClass,selectors[i],originals[i],method_getTypeEncoding(m));}
+        for(unsigned i=0;i<6;i++){Method m=class_getInstanceMethod(rootClass,selectors[i]);class_replaceMethod(rootClass,selectors[i],originals[i],method_getTypeEncoding(m));}
     }
-    puts("PASS production animation installation/callbacks: iOS17 native gesture + Home/App entry/exit; fresh Deck ownership; native/special/OS/master/default fallbacks");
+    puts("PASS production animation/idle Home factories: native Home floor, phone gesture + four entry/exit routes; released-floor/float/Peek/native/OS/master/default fallbacks");
 }return 0;}
 '''
 
@@ -125,7 +177,7 @@ int main(void){@autoreleasepool{
 def run(source):
     generated = contract(source).split('#define CHECK', 1)[0]
     generated = generated.replace('@interface SBMainSwitcherRootSwitcherModifier : NSObject\n',
-        '@interface SBMainSwitcherRootSwitcherModifier : NSObject { @public NSInteger _environmentMode; }\n')
+        '@interface SBMainSwitcherRootSwitcherModifier : NSObject { @public NSInteger _environmentMode; BOOL _floatingSwitcherVisible, _isInPeekState; }\n')
     generated = generated.replace('#define objc_getClass TestClass', FIXTURES + '\n#define objc_getClass TestClass')
     with tempfile.TemporaryDirectory(prefix='trollpad-animation-contract-') as directory:
         p = Path(directory)

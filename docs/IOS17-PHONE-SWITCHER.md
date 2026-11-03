@@ -1,5 +1,52 @@
 # iOS 17 phone switcher candidate
 
+## Test5: align the ordinary idle Home/Deck subtree
+
+Test4 no longer crashed, but the user clarified that re-entry becomes visually
+wrong after an idle interval, independent of the exit method. The two Home
+snapshots after swipe/tap exits had the same native routing chain and wallpaper/
+blur fields, so the earlier exit-method hypothesis was withdrawn. The later
+recording localizes the dark blur primarily to the wallpaper behind the cards,
+not a black Photos-app card snapshot. Read-only sampling is retained locally;
+its timings are not an animation-performance benchmark.
+
+The native phone root maintains a Deck as its `multitaskingModifier` child and
+uses `_SBHomeScreenFloorSwitcherModifier` while Home is active. Its native floor
+updater shares that Deck as the switcher floor instead of attaching/removing a
+second copy. Test4 still used the iPad Main root's nil multitasking factory and
+empty Home routing floor. The native Home floor explicitly requests asynchronous
+surface retention (`wantsAsynchronousSurfaceRetentionAssertion = YES`), while
+the empty routing chain has no child policy requesting it. This is a specific
+standby-policy mismatch consistent with delayed re-entry, not independent
+proof of a five-second cache-expiry root cause.
+
+Candidate `2.0.6~switcher-test5` aligns this native pairing only for the iOS 17
+Main root with the iPad switcher off. It provides a live owned Deck through the
+native multitasking factory, shares it as the ordinary switcher floor, and
+selects the native Home floor only for Home mode without floating/Peek state.
+Other App/window routes, Stage Manager root classes, non-nil native factory
+results, default-on/master-off and other OS versions remain native. The outer
+iPad platform/windowing root stays in place.
+
+There is no timer, cache timeout change, permanent snapshot association or
+manual forced surface-retention return. Apple's Home floor supplies its own
+policy; the native child tree owns and retires its objects. The earlier
+completed-floor, cross-root ownership and animation corrections remain.
+
+The expanded host production-callback contract fails against test4's absent
+idle Deck subtree and passes the paired Home/Deck identity, live-object reuse,
+retired-object replacement, floating/Peek/App fallbacks and OS/default guards.
+Native method/ivar signatures were checked against 21D61. Physical delayed
+re-entry acceptance remains pending. Test immediately, then after 5–10 seconds
+and 20–30 seconds on Home, with both exit methods and several repeated cycles.
+No automatic installation, respring or publication is part of this handoff.
+
+Both test5 packaging schemes passed build/payload checks, with Settings
+resources unchanged and no probes, tests or recordings included. Their hashes
+are stored in the ignored `packages/release/ios17-switcher-test5/validation.json`.
+RootHide debug symbols are retained locally; delayed-entry device acceptance
+is not yet claimed.
+
 ## Test4: native Deck gesture and entry/exit transitions
 
 The user confirmed test3 no longer crashed, then reported abrupt switcher
