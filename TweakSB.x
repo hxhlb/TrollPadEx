@@ -481,6 +481,30 @@ static id TPPhoneMainSwitcherFactory(id self, SEL command, NSInteger mode) {
     return TPOriginalMainSwitcherFactory(self, command, mode);
 }
 
+static char TPPhoneLegacyFloorAssociation;
+static id TPPhoneLegacyFloor(id root, id proposed) {
+    if (!proposed || !trollPadEnabled || useiPadAppSwitcher ||
+        object_getClass(proposed) != objc_getClass("SBMixedGridSwitcherModifier")) return proposed;
+    TPPreparePhoneSwitcherCompatibility();
+    if (!TPPhoneDeckClass) return proposed;
+    id deck = objc_getAssociatedObject(root, &TPPhoneLegacyFloorAssociation);
+    if (!deck) {
+        deck = [[TPPhoneDeckClass alloc] init];
+        objc_setAssociatedObject(root, &TPPhoneLegacyFloorAssociation, deck, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return deck ?: proposed;
+}
+
+static id (*TPOriginalLegacyFloorTransition)(id, SEL, id);
+static id TPPhoneLegacyFloorTransition(id self, SEL command, id event) {
+    return TPPhoneLegacyFloor(self, TPOriginalLegacyFloorTransition(self, command, event));
+}
+
+static id (*TPOriginalLegacyFloorGesture)(id, SEL, id);
+static id TPPhoneLegacyFloorGesture(id self, SEL command, id event) {
+    return TPPhoneLegacyFloor(self, TPOriginalLegacyFloorGesture(self, command, event));
+}
+
 static BOOL canInstallStageManagerCapabilityHooks() {
     Class appSwitcherDefaultsClass = objc_getClass("SBAppSwitcherDefaults");
     Class applicationClass = objc_getClass("SBApplication");
@@ -1482,6 +1506,21 @@ static BOOL shouldForceMultitaskingProperty(CFStringRef property) {
             MSHookMessageEx(objc_getClass("SBMainSwitcherRootSwitcherModifier"),
                 @selector(_newMultitaskingModifierForEnvironmentMode:),
                 (IMP)TPPhoneMainSwitcherFactory, (IMP *)&TPOriginalMainSwitcherFactory);
+        }
+    }
+    if (mainSwitcherVersion == 17 && objc_getClass("SBDeckSwitcherModifier")) {
+        // iOS 17's transition factory allocates MixedGrid directly. The gesture
+        // selector branches directly to that implementation, bypassing ObjC dispatch.
+        Class legacyRoot = objc_getClass("SBMainSwitcherRootSwitcherModifier");
+        Method legacyFloorTransition = class_getInstanceMethod(legacyRoot, @selector(floorModifierForTransitionEvent:));
+        if (legacyFloorTransition && strcmp(method_getTypeEncoding(legacyFloorTransition), "@24@0:8@16") == 0) {
+            MSHookMessageEx(legacyRoot, @selector(floorModifierForTransitionEvent:),
+                (IMP)TPPhoneLegacyFloorTransition, (IMP *)&TPOriginalLegacyFloorTransition);
+        }
+        Method legacyFloorGesture = class_getInstanceMethod(legacyRoot, @selector(floorModifierForGestureEvent:));
+        if (legacyFloorGesture && strcmp(method_getTypeEncoding(legacyFloorGesture), "@24@0:8@16") == 0) {
+            MSHookMessageEx(legacyRoot, @selector(floorModifierForGestureEvent:),
+                (IMP)TPPhoneLegacyFloorGesture, (IMP *)&TPOriginalLegacyFloorGesture);
         }
     }
 

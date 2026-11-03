@@ -1,5 +1,46 @@
 # iOS 17 phone switcher candidate
 
+## Test2: replace the actual legacy floor
+
+The user reported no visual correction with test1. Read-only task-memory checks
+on iOS 17.3.1 matched the installed test1 UUID and confirmed the startup option
+was off, the Deck class prepared, and the main-factory hook installed. The
+active content controller was already `SBDeckSwitcherViewController`. With the
+switcher visible, however, its preserved `SBiPadOSPlatformSwitcherModifier` root
+contained `SBMainSwitcherRootSwitcherModifier -> SBMixedGridSwitcherModifier`
+and native grid children. Thus the remaining grid was the active floor layout,
+not an unread preference or an absent hook.
+
+The matching native `floorModifierForTransitionEvent:` at `0x1d3487d60`
+directly allocates/reuses the MixedGrid floor for a regular mode-2 transition;
+it does not call the helper modified in test1. `floorModifierForGestureEvent:`
+branches directly to that implementation, so both selectors require hooks.
+Both method-list entries have `@24@0:8@16` signatures.
+
+Candidate `2.0.6~switcher-test2` adds signature-checked hooks on those two iOS 17
+selectors. Only an exact native `SBMixedGridSwitcherModifier` result is replaced
+when the tweak is on and the startup iPad choice is off. A per-root associated
+native Deck is reused across transition/gesture queries. The system root,
+child insertion/removal, window management and native Deck algorithms remain
+in place. Specialized App Expose/subclass results, nil, default-on, master-off,
+and all other OS versions keep their original floor results.
+
+The expanded production-callback host contract reproduces test1's failure on
+the direct transition floor, then passes both fixed entry points, stable Deck
+identity, original-call counts, specialized/nil fallbacks, and OS boundaries.
+This is still fixture-based callback proof; physical test2 rendering, app
+activation, removal and animation acceptance are pending. Transient read-only
+probes used for diagnosis are not part of the package.
+
+RootHide and Rootless test2 builds and package-structure checks passed; the
+Settings resources remain byte-identical to 2.0.5 and probes are absent.
+Test2 hashes are recorded in the ignored
+`packages/release/ios17-switcher-test2/validation.json`. No installation or
+respring was performed during the locked-device diagnosis. Temporary native
+probe executables and their entitlement file were removed from the phone.
+
+## Test1 record (superseded; do not distribute)
+
 Local branch: `iya/ios17-phone-switcher`, based on formal 2.0.5 (`7344d0d`).
 Candidate package: `2.0.6~switcher-test1`. No publication or device installation
 is part of this handoff.

@@ -25,14 +25,20 @@ def contract(source):
 #include <stdio.h>
 static BOOL trollPadEnabled, useiPadAppSwitcher, missingDeck, wrongABI, missingFactory;
 static NSInteger testMajor;
-static unsigned hookCalls, originalCalls;
+static unsigned hookCalls, originalCalls, floorCalls;
 static Class TPPhoneDeckClass;
 @interface SBDeckSwitcherModifier : NSObject @end
 @implementation SBDeckSwitcherModifier @end
 @interface SBMixedGridSwitcherModifier : NSObject @end
 @implementation SBMixedGridSwitcherModifier @end
+@interface AppExposeFloor : SBMixedGridSwitcherModifier @end
+@implementation AppExposeFloor @end
+static id nativeFloor(id root);
 @interface SBMainSwitcherRootSwitcherModifier : NSObject
+@property(nonatomic,strong) id floorFixture;
 - (id)_newMultitaskingModifierForEnvironmentMode:(NSInteger)mode;
+- (id)floorModifierForTransitionEvent:(id)event;
+- (id)floorModifierForGestureEvent:(id)event;
 @end
 @implementation SBMainSwitcherRootSwitcherModifier
 - (id)_newMultitaskingModifierForEnvironmentMode:(NSInteger)mode {
@@ -40,12 +46,20 @@ static Class TPPhoneDeckClass;
     // iOS 17.3.1 IPSW: mode 2 precedes the effectiveSwitcherStyle check.
     return mode == 2 ? [SBMixedGridSwitcherModifier new] : [NSObject new];
 }
+- (id)floorModifierForTransitionEvent:(id)event { return nativeFloor(self); }
+// The native gesture selector branches straight to the floor implementation.
+- (id)floorModifierForGestureEvent:(id)event { return nativeFloor(self); }
 @end
+static id nativeFloor(id root) { floorCalls++; return [root floorFixture]; }
 @interface WrongFactory : NSObject
 - (id)_newMultitaskingModifierForEnvironmentMode:(id)mode;
+- (id)floorModifierForTransitionEvent:(NSInteger)event;
+- (id)floorModifierForGestureEvent:(NSInteger)event;
 @end
 @implementation WrongFactory
 - (id)_newMultitaskingModifierForEnvironmentMode:(id)mode { return nil; }
+- (id)floorModifierForTransitionEvent:(NSInteger)event { return nil; }
+- (id)floorModifierForGestureEvent:(NSInteger)event { return nil; }
 @end
 @interface TestProcessInfo : NSObject
 + (instancetype)processInfo;
@@ -79,13 +93,18 @@ int main(void) { @autoreleasepool {
     SEL sel = @selector(_newMultitaskingModifierForEnvironmentMode:);
     Method method = class_getInstanceMethod(cls,sel);
     IMP native = method_getImplementation(method);
+    SEL transition = @selector(floorModifierForTransitionEvent:), gesture = @selector(floorModifierForGestureEvent:);
+    Method transitionMethod = class_getInstanceMethod(cls,transition), gestureMethod = class_getInstanceMethod(cls,gesture);
+    IMP nativeTransition = method_getImplementation(transitionMethod), nativeGesture = method_getImplementation(gestureMethod);
     for (NSNumber *version in @[@16,@17,@18,@26,@27]) {
         testMajor = version.integerValue; hookCalls = 0;
         class_replaceMethod(cls,sel,native,method_getTypeEncoding(method));
         install();
         BOOL expectedHook = testMajor == 17 || testMajor >= 26;
         TPMainSwitcherFactoryFunction *call = (TPMainSwitcherFactoryFunction *)method_getImplementation(method);
-        id root = [cls new];
+        SBMainSwitcherRootSwitcherModifier *root = [cls new];
+        root.floorFixture = [SBMixedGridSwitcherModifier new];
+        id cachedFloor = nil;
         for (unsigned mask=0; mask<4; mask++) {
             trollPadEnabled = mask & 1; useiPadAppSwitcher = !!(mask & 2);
             originalCalls = 0;
@@ -94,9 +113,31 @@ int main(void) { @autoreleasepool {
             CHECK([result isMemberOfClass:phone ? SBDeckSwitcherModifier.class : SBMixedGridSwitcherModifier.class],
                 "mode 2 must create phone Deck only for enabled tweak + disabled iPad option");
             CHECK(originalCalls == (phone ? 0 : 1), "original called once on passthrough");
+            floorCalls = 0;
+            id t = [root floorModifierForTransitionEvent:nil], g = [root floorModifierForGestureEvent:nil];
+            BOOL phoneFloor = testMajor == 17 && trollPadEnabled && !useiPadAppSwitcher;
+            CHECK([t isMemberOfClass:phoneFloor ? SBDeckSwitcherModifier.class : SBMixedGridSwitcherModifier.class],
+                "actual transition floor must replace direct MixedGrid allocation on iOS17");
+            CHECK(g == (phoneFloor ? t : root.floorFixture) && floorCalls == 2,
+                "direct gesture path shares cached Deck and calls each original once");
+            if (phoneFloor) cachedFloor = t;
+            if (!phoneFloor) CHECK(t == root.floorFixture,"native floor identity retained on passthrough");
         }
-        CHECK(hookCalls == (expectedHook ? 1 : 0), "install only iOS 17 and existing 26+ path");
+        CHECK(hookCalls == (testMajor == 17 ? 3 : (expectedHook ? 1 : 0)), "floor hooks iOS17 only; existing 26+ hook preserved");
         trollPadEnabled = YES; useiPadAppSwitcher = NO; originalCalls = 0;
+        if (testMajor == 17) {
+            CHECK([root floorModifierForTransitionEvent:nil] == cachedFloor,"root reuses its Deck across transitions");
+            SBMainSwitcherRootSwitcherModifier *other = [cls new]; other.floorFixture = [SBMixedGridSwitcherModifier new];
+            id otherFloor = [other floorModifierForTransitionEvent:nil];
+            CHECK([otherFloor isMemberOfClass:SBDeckSwitcherModifier.class] && otherFloor != cachedFloor,
+                "different roots never share their Deck");
+        }
+        root.floorFixture = [AppExposeFloor new];
+        CHECK([root floorModifierForTransitionEvent:nil] == root.floorFixture &&
+            [root floorModifierForGestureEvent:nil] == root.floorFixture,"specialized grid/App Expose results untouched");
+        root.floorFixture = nil;
+        CHECK([root floorModifierForTransitionEvent:nil] == nil &&
+            [root floorModifierForGestureEvent:nil] == nil,"nil floor preserved");
         CHECK([call(root,sel,3) isMemberOfClass:NSObject.class] && originalCalls == 1,
             "other environment modes preserve original factory");
         if (expectedHook) {
@@ -106,13 +147,15 @@ int main(void) { @autoreleasepool {
             missingDeck = NO;
         }
         class_replaceMethod(cls,sel,native,method_getTypeEncoding(method));
+        class_replaceMethod(cls,transition,nativeTransition,method_getTypeEncoding(transitionMethod));
+        class_replaceMethod(cls,gesture,nativeGesture,method_getTypeEncoding(gestureMethod));
     }
     testMajor = 17; hookCalls = 0;
     wrongABI = YES; install(); wrongABI = NO;
     missingFactory = YES; install(); missingFactory = NO;
     missingDeck = YES; install(); missingDeck = NO;
     CHECK(hookCalls == 0,"wrong ABI and missing classes skipped");
-    puts("PASS production factory + installation: iOS17 off -> Deck; iOS26+ preserved; iOS16/18 unchanged; default-on/master-off/other-mode/missing-class/ABI fallbacks");
+    puts("PASS production main/transition/gesture factories: iOS17 direct floor -> cached Deck; specialized/nil/identity/original calls preserved; iOS26+/16/18 unchanged; defaults/master/ABI fallbacks");
 } return 0; }
 '''
     return fixture + factory + '\nstatic void install(void) {\n' + install + '\n}\n' + main
