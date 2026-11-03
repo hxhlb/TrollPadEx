@@ -1,5 +1,18 @@
 # iOS 17 phone switcher candidate
 
+## Acceptance and 2.0.6 release
+
+On 2026-11-03 the user confirmed that the latest test5 candidate works perfectly
+and explicitly requested source submission and APT publication. This is reported
+acceptance on the iOS 17.3.1 RootHide phone used in this investigation, including
+the delayed-entry preview/blur symptom. It is not independent device acceptance
+on other versions or jailbreak schemes, and does not prove the earlier visual
+artifact interpretations or an exact cache-expiry interval. The transient
+diagnostic probes/recordings remain excluded from release packaging.
+
+Formal version: `2.0.6`. The failed/superseded candidates below are retained as
+research history and must not be distributed as the final release.
+
 ## Test5: align the ordinary idle Home/Deck subtree
 
 Test4 no longer crashed, but the user clarified that re-entry becomes visually
