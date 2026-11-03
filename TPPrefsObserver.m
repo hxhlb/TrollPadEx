@@ -1,4 +1,5 @@
 #import "TPPrefsObserver.h"
+#import "TPStageSwitcherPolicy.h"
 
 static void TPPrefsChanged(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     TPPrefsObserver *prefs = (__bridge TPPrefsObserver *)observer;
@@ -13,6 +14,7 @@ static void TPPrefsChanged(CFNotificationCenterRef center, void *observer, CFStr
     [self observeKey:@"TPHideStageManagerResizeCorners"];
     [self observeKey:@"TPUseiPadAppSwitchingAnimation"];
     [self observeKey:@"TPUseiPadAppSwitcher"];
+    if (TPHasStageSwitcherCoupling()) [self observeKey:@"SBChamoisWindowingEnabled"];
     [self observeKey:@"TPIsFloatingDockSupported"];
     [self observeKey:@"SBAppLibraryInDockEnabled"];
     [self observeKey:@"TPScaleGridSwitcher"];
@@ -41,6 +43,7 @@ static void TPPrefsChanged(CFNotificationCenterRef center, void *observer, CFStr
 
  - (void)observeValueForKeyPath:(NSString *) 
 keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
+    if (TPHasStageSwitcherCoupling()) TPReconcileStageSwitcherPolicy(keyPath);
     CFPreferencesAppSynchronize(CFSTR("com.apple.springboard"));
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
     [defaults synchronize];
@@ -49,7 +52,9 @@ keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)contex
     self.hideStageManagerResizeCorners = [defaults boolForKey:@"TPHideStageManagerResizeCorners"];
     self.useiPadAppSwitchingAnimation = [defaults boolForKey:@"TPUseiPadAppSwitchingAnimation"];
     id iPadAppSwitcher = [defaults objectForKey:@"TPUseiPadAppSwitcher"];
-    self.useiPadAppSwitcher = iPadAppSwitcher ? [iPadAppSwitcher boolValue] : YES;
+    self.useiPadAppSwitcher = TPHasStageSwitcherCoupling() ? TPStorediPadSwitcherEnabled() :
+        (iPadAppSwitcher ? [iPadAppSwitcher boolValue] : YES);
+    if (TPHasStageSwitcherCoupling()) self.stageManagerEnabled = TPStoredStageManagerEnabled();
     if (@available(iOS 26.0, *)) {
         id floatingDock = [defaults objectForKey:@"TPIsFloatingDockSupported"];
         self.isFloatingDockSupported = floatingDock ? [floatingDock boolValue] : YES;

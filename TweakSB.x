@@ -7,6 +7,7 @@
 #import "TPPrefsObserver.h"
 #import "TPWindowScaling.h"
 #import "TPDockLibrary.h"
+#import "TPStageSwitcherPolicy.h"
 #import "UIKitPrivate.h"
 
 #include <assert.h>
@@ -70,6 +71,7 @@ typedef struct {
 } TPWindowingItemFrame;
 
 static BOOL isStageManagerEnabled() {
+    if (TPHasStageSwitcherCoupling()) return pref.stageManagerEnabled;
     id value = [NSUserDefaults.standardUserDefaults objectForKey:@"SBChamoisWindowingEnabled"];
     return value ? [value boolValue] : NO;
 }
@@ -87,7 +89,9 @@ static BOOL isMultitaskingActive() {
 }
 
 static BOOL isStageManagerActive() {
-    return trollPadEnabled && isStageManagerEnabled();
+    // A controller/root change still requires the existing respring workflow.
+    return trollPadEnabled && isStageManagerEnabled() &&
+        (!TPHasStageSwitcherCoupling() || useiPadAppSwitcher);
 }
 
 static BOOL isWindowingActive() {
@@ -481,160 +485,6 @@ static id TPPhoneMainSwitcherFactory(id self, SEL command, NSInteger mode) {
     return TPOriginalMainSwitcherFactory(self, command, mode);
 }
 
-static Ivar TPPhoneLegacyEnvironmentIvar;
-
-static id TPPhoneLegacyFloor(id root, id proposed) {
-    if (!proposed || !trollPadEnabled || useiPadAppSwitcher ||
-        object_getClass(proposed) != objc_getClass("SBMixedGridSwitcherModifier")) return proposed;
-    TPPreparePhoneSwitcherCompatibility();
-    if (!TPPhoneDeckClass) return proposed;
-    id deck = ((id (*)(id, SEL))objc_msgSend)(root, @selector(floorModifier));
-    // Removed modifiers are completed and their query chain is disconnected.
-    // Reuse only the active floor still owned by this root, never a saved copy.
-    if (object_getClass(deck) == TPPhoneDeckClass &&
-        ((id (*)(id, SEL))objc_msgSend)(deck, @selector(parentModifier)) == root &&
-        ((NSInteger (*)(id, SEL))objc_msgSend)(deck, @selector(state)) == 0) return deck;
-    return [[TPPhoneDeckClass alloc] init] ?: proposed;
-}
-
-static id (*TPOriginalLegacyFloorTransition)(id, SEL, id);
-static id TPPhoneLegacyFloorTransition(id self, SEL command, id event) {
-    return TPPhoneLegacyFloor(self, TPOriginalLegacyFloorTransition(self, command, event));
-}
-
-static id (*TPOriginalLegacyFloorGesture)(id, SEL, id);
-static id TPPhoneLegacyFloorGesture(id self, SEL command, id event) {
-    return TPPhoneLegacyFloor(self, TPOriginalLegacyFloorGesture(self, command, event));
-}
-
-@interface NSObject (TPPhoneLegacyAnimations)
-- (instancetype)initWithStartingEnvironmentMode:(NSInteger)mode multitaskingModifier:(id)modifier;
-- (instancetype)initWithTransitionID:(id)identifier direction:(NSInteger)direction multitaskingModifier:(id)modifier;
-- (instancetype)initWithTransitionID:(id)identifier direction:(NSInteger)direction fullScreenAppLayout:(id)layout deckModifier:(id)modifier;
-- (void)setResignsTransitionIntoAppSwitcher:(BOOL)value;
-@end
-
-static BOOL TPPrepareLegacyPhoneAnimations(void) {
-    const struct { const char *className; const char *selector; const char *types; } methods[] = {
-        {"SBMainSwitcherRootSwitcherModifier", "gestureModifierForGestureEvent:", "@24@0:8@16"},
-        {"SBMainSwitcherRootSwitcherModifier", "transitionModifierForMainTransitionEvent:", "@24@0:8@16"},
-        {"SBHomeGestureRootSwitcherModifier", "initWithStartingEnvironmentMode:multitaskingModifier:", "@32@0:8q16@24"},
-        {"SBHomeGestureRootSwitcherModifier", "setResignsTransitionIntoAppSwitcher:", "v20@0:8B16"},
-        {"SBHomeToDeckSwitcherModifier", "initWithTransitionID:direction:multitaskingModifier:", "@40@0:8@16q24@32"},
-        {"SBDeckToFullScreenSwitcherModifier", "initWithTransitionID:direction:fullScreenAppLayout:deckModifier:", "@48@0:8@16q24@32@40"},
-        {"SBGestureSwitcherModifierEvent", "gestureType", "q16@0:8"},
-        {"SBTransitionSwitcherModifierEvent", "fromEnvironmentMode", "q16@0:8"},
-        {"SBTransitionSwitcherModifierEvent", "toEnvironmentMode", "q16@0:8"},
-        {"SBTransitionSwitcherModifierEvent", "fromAppLayout", "@16@0:8"},
-        {"SBTransitionSwitcherModifierEvent", "toAppLayout", "@16@0:8"},
-        {"SBTransitionSwitcherModifierEvent", "fromFloatingAppLayout", "@16@0:8"},
-        {"SBTransitionSwitcherModifierEvent", "toFloatingAppLayout", "@16@0:8"},
-        {"SBTransitionSwitcherModifierEvent", "fromAppExposeBundleID", "@16@0:8"},
-        {"SBTransitionSwitcherModifierEvent", "toAppExposeBundleID", "@16@0:8"},
-        {"SBTransitionSwitcherModifierEvent", "fromPeekConfiguration", "q16@0:8"},
-        {"SBTransitionSwitcherModifierEvent", "toPeekConfiguration", "q16@0:8"},
-        {"SBTransitionSwitcherModifierEvent", "transitionID", "@16@0:8"},
-        {"SBTransitionSwitcherModifierEvent", "isBannerUnfurlTransition", "B16@0:8"},
-        {"SBTransitionSwitcherModifierEvent", "isContinuityTransition", "B16@0:8"},
-        {"SBTransitionSwitcherModifierEvent", "isMoveDisplaysTransition", "B16@0:8"},
-    };
-    for (NSUInteger i = 0; i < sizeof(methods) / sizeof(methods[0]); i++) {
-        Method method = class_getInstanceMethod(objc_getClass(methods[i].className), sel_registerName(methods[i].selector));
-        if (!method || strcmp(method_getTypeEncoding(method), methods[i].types) != 0) return NO;
-    }
-    Class root = objc_getClass("SBMainSwitcherRootSwitcherModifier");
-    Ivar mode = class_getInstanceVariable(root, "_environmentMode");
-    if (!mode || strcmp(ivar_getTypeEncoding(mode), "q") != 0 || ivar_getOffset(mode) < 0 ||
-        ivar_getOffset(mode) + sizeof(NSInteger) > class_getInstanceSize(root)) return NO;
-    TPPhoneLegacyEnvironmentIvar = mode;
-    return YES;
-}
-
-static id (*TPOriginalLegacyPhoneTransition)(id, SEL, id);
-static id TPPhoneLegacyTransition(id self, SEL command, id event) {
-    id proposed = TPOriginalLegacyPhoneTransition(self, command, event);
-    if (proposed || !trollPadEnabled || useiPadAppSwitcher ||
-        object_getClass(self) != objc_getClass("SBMainSwitcherRootSwitcherModifier") ||
-        ![event isKindOfClass:objc_getClass("SBTransitionSwitcherModifierEvent")]) return proposed;
-    NSInteger from = ((NSInteger (*)(id, SEL))objc_msgSend)(event, @selector(fromEnvironmentMode));
-    NSInteger to = ((NSInteger (*)(id, SEL))objc_msgSend)(event, @selector(toEnvironmentMode));
-    BOOL home = (from == 1 && to == 2) || (from == 2 && to == 1);
-    BOOL app = (from == 3 && to == 2) || (from == 2 && to == 3);
-    if (!home && !app) return proposed;
-    for (NSString *name in @[@"isBannerUnfurlTransition", @"isContinuityTransition", @"isMoveDisplaysTransition"]) {
-        if (((BOOL (*)(id, SEL))objc_msgSend)(event, NSSelectorFromString(name))) return proposed;
-    }
-    for (NSString *name in @[@"fromAppExposeBundleID", @"toAppExposeBundleID", @"fromFloatingAppLayout", @"toFloatingAppLayout"]) {
-        if (((id (*)(id, SEL))objc_msgSend)(event, NSSelectorFromString(name))) return proposed;
-    }
-    NSInteger fromPeek = ((NSInteger (*)(id, SEL))objc_msgSend)(event, @selector(fromPeekConfiguration));
-    NSInteger toPeek = ((NSInteger (*)(id, SEL))objc_msgSend)(event, @selector(toPeekConfiguration));
-    // Matches SBPeekConfigurationIsValid on iOS 17: only values 2 and 3.
-    if ((fromPeek & ~1L) == 2 || (toPeek & ~1L) == 2) return proposed;
-    id layout = app ? ((id (*)(id, SEL))objc_msgSend)(event,
-        to == 2 ? @selector(fromAppLayout) : @selector(toAppLayout)) : nil;
-    if (app && !layout) return proposed;
-    TPPreparePhoneSwitcherCompatibility();
-    if (!TPPhoneDeckClass) return proposed;
-    id deck = [[TPPhoneDeckClass alloc] init];
-    id identifier = ((id (*)(id, SEL))objc_msgSend)(event, @selector(transitionID));
-    if (home) {
-        return [[objc_getClass("SBHomeToDeckSwitcherModifier") alloc]
-            initWithTransitionID:identifier direction:to == 2 ? 1 : 0 multitaskingModifier:deck];
-    }
-    return [[objc_getClass("SBDeckToFullScreenSwitcherModifier") alloc]
-        initWithTransitionID:identifier direction:to == 2 ? 1 : 0 fullScreenAppLayout:layout deckModifier:deck];
-}
-
-static id (*TPOriginalLegacyPhoneGesture)(id, SEL, id);
-static id TPPhoneLegacyGesture(id self, SEL command, id event) {
-    id proposed = TPOriginalLegacyPhoneGesture(self, command, event);
-    if (proposed || !trollPadEnabled || useiPadAppSwitcher || !TPPhoneLegacyEnvironmentIvar ||
-        object_getClass(self) != objc_getClass("SBMainSwitcherRootSwitcherModifier") ||
-        ![event isKindOfClass:objc_getClass("SBGestureSwitcherModifierEvent")] ||
-        ((NSInteger (*)(id, SEL))objc_msgSend)(event, @selector(gestureType)) != 1) return proposed;
-    NSInteger mode = 0;
-    memcpy(&mode, (const char *)(__bridge const void *)self + ivar_getOffset(TPPhoneLegacyEnvironmentIvar), sizeof(mode));
-    // A foreground App gesture can minimize without entering the switcher.
-    // Its driver and icon/Dock animation must remain under the native iPad root.
-    if (mode != 1 && mode != 2) return proposed;
-    TPPreparePhoneSwitcherCompatibility();
-    if (!TPPhoneDeckClass) return proposed;
-    id floor = ((id (*)(id, SEL))objc_msgSend)(self, @selector(floorModifier));
-    if (mode == 2 && object_getClass(floor) != TPPhoneDeckClass) return proposed;
-    id gesture = [[objc_getClass("SBHomeGestureRootSwitcherModifier") alloc]
-        initWithStartingEnvironmentMode:mode multitaskingModifier:[[TPPhoneDeckClass alloc] init]];
-    [gesture setResignsTransitionIntoAppSwitcher:YES];
-    return gesture;
-}
-
-static BOOL canInstallLegacySurfaceRetentionHook(void) {
-    const struct { const char *className; const char *selector; const char *types; } methods[] = {
-        {"SBMainSwitcherControllerCoordinator", "switcherContentController:setCacheAsynchronousRenderingSurfaces:", "v28@0:8@16B24"},
-        {"SBMainSwitcherControllerCoordinator", "_contentControllerIsEmbeddedDisplayContentController:", "B24@0:8@16"},
-        {"SBDeckSwitcherViewController", "switcherController", "@16@0:8"},
-        {"SBSwitcherController", "unlockedEnvironmentMode", "q16@0:8"},
-    };
-    for (NSUInteger i = 0; i < sizeof(methods) / sizeof(methods[0]); i++) {
-        Method method = class_getInstanceMethod(objc_getClass(methods[i].className), sel_registerName(methods[i].selector));
-        if (!method || strcmp(method_getTypeEncoding(method), methods[i].types) != 0) return NO;
-    }
-    return YES;
-}
-
-static void (*TPOriginalLegacySurfaceRetention)(id, SEL, id, BOOL);
-static void TPPhoneLegacySurfaceRetention(id self, SEL command, id content, BOOL retain) {
-    if (!retain && trollPadEnabled && !useiPadAppSwitcher &&
-        object_getClass(content) == objc_getClass("SBDeckSwitcherViewController") &&
-        ((BOOL (*)(id, SEL, id))objc_msgSend)(self, @selector(_contentControllerIsEmbeddedDisplayContentController:), content)) {
-        id controller = ((id (*)(id, SEL))objc_msgSend)(content, @selector(switcherController));
-        // Native phone Home requests async surface retention. Keep only that
-        // cache policy; never substitute its floor (which hides App content).
-        if (controller && ((NSInteger (*)(id, SEL))objc_msgSend)(controller, @selector(unlockedEnvironmentMode)) == 1) retain = YES;
-    }
-    TPOriginalLegacySurfaceRetention(self, command, content, retain);
-}
-
 static BOOL canInstallStageManagerCapabilityHooks() {
     Class appSwitcherDefaultsClass = objc_getClass("SBAppSwitcherDefaults");
     Class applicationClass = objc_getClass("SBApplication");
@@ -688,6 +538,14 @@ static BOOL hasWindowingItemFrameMethod(Class modifierClass) {
 // so I just hook them, set iPad idiom when necessary and set back to iPhone after calling original
 
 static uint16_t forcePadIdiom = 0;
+
+static BOOL shouldCreateNativePhoneSwitcher(id scene) {
+    if (!trollPadEnabled || useiPadAppSwitcher ||
+        !TPHasStageSwitcherCoupling()) return NO;
+    SEL mainDisplay = @selector(isMainDisplayWindowScene);
+    return [scene respondsToSelector:mainDisplay] &&
+        ((BOOL (*)(id, SEL))objc_msgSend)(scene, mainDisplay);
+}
 
 %hook UIDevice
 - (UIUserInterfaceIdiom)userInterfaceIdiom {
@@ -816,6 +674,18 @@ static uint16_t forcePadIdiom = 0;
     if (!trollPadEnabled) {
         return %orig;
     }
+    if (shouldCreateNativePhoneSwitcher(scene)) {
+        // Let the native factory choose the phone root as well as Deck cards.
+        // Suppress an enclosing iPad scope only for this creation call.
+        uint16_t savedIdiom = forcePadIdiom;
+        forcePadIdiom = 0;
+        @try {
+            %orig;
+        } @finally {
+            forcePadIdiom = savedIdiom;
+        }
+        return;
+    }
     forcePadIdiom++;
     %orig;
     forcePadIdiom--;
@@ -827,6 +697,17 @@ static uint16_t forcePadIdiom = 0;
 - (void)_updateContentViewControllerIfNeeded {
     if (!trollPadEnabled) {
         return %orig;
+    }
+    if (TPHasStageSwitcherCoupling()) {
+        id scene = [(id)self respondsToSelector:@selector(windowScene)] ?
+            ((id (*)(id, SEL))objc_msgSend)(self, @selector(windowScene)) : nil;
+        if (shouldCreateNativePhoneSwitcher(scene)) {
+            uint16_t savedIdiom = forcePadIdiom;
+            forcePadIdiom = 0;
+            @try { %orig; }
+            @finally { forcePadIdiom = savedIdiom; }
+            return;
+        }
     }
     forcePadIdiom++;
     %orig;
@@ -1604,6 +1485,7 @@ static BOOL shouldForceMultitaskingProperty(CFStringRef property) {
         CFNotificationSuspensionBehaviorCoalesce);
     pref = [TPPrefsObserver new];
     useiPadAppSwitcher = pref.useiPadAppSwitcher;
+    TPStageSwitcherAppliedAtBoot(useiPadAppSwitcher);
     if (trollPadEnabled && !useiPadAppSwitcher) {
         TPPreparePhoneSwitcherCompatibility();
     }
@@ -1625,10 +1507,7 @@ static BOOL shouldForceMultitaskingProperty(CFStringRef property) {
             @selector(multitaskingModifierForEvent:),
             (IMP)TPPhoneContinuousExposeFactory, (IMP *)&TPOriginalContinuousExposeFactory);
     }
-    // iOS 17's mode-2 factory creates MixedGrid before checking switcher style.
-    // Keep other legacy versions on their existing native creation paths.
-    NSInteger mainSwitcherVersion = NSProcessInfo.processInfo.operatingSystemVersion.majorVersion;
-    if (mainSwitcherVersion == 17 || mainSwitcherVersion >= 26) {
+    if (@available(iOS 26.0, *)) {
         Method mainPresentation = class_getInstanceMethod(objc_getClass("SBMainSwitcherRootSwitcherModifier"),
             @selector(_newMultitaskingModifierForEnvironmentMode:));
         if (mainPresentation && strcmp(method_getTypeEncoding(mainPresentation), "@24@0:8q16") == 0 &&
@@ -1636,39 +1515,6 @@ static BOOL shouldForceMultitaskingProperty(CFStringRef property) {
             MSHookMessageEx(objc_getClass("SBMainSwitcherRootSwitcherModifier"),
                 @selector(_newMultitaskingModifierForEnvironmentMode:),
                 (IMP)TPPhoneMainSwitcherFactory, (IMP *)&TPOriginalMainSwitcherFactory);
-        }
-    }
-    if (mainSwitcherVersion == 17 && objc_getClass("SBDeckSwitcherModifier")) {
-        // iOS 17's transition factory allocates MixedGrid directly. The gesture
-        // selector branches directly to that implementation, bypassing ObjC dispatch.
-        Class legacyRoot = objc_getClass("SBMainSwitcherRootSwitcherModifier");
-        Method floorGetter = class_getInstanceMethod(legacyRoot, @selector(floorModifier));
-        Method parentGetter = class_getInstanceMethod(objc_getClass("SBDeckSwitcherModifier"), @selector(parentModifier));
-        Method stateGetter = class_getInstanceMethod(objc_getClass("SBDeckSwitcherModifier"), @selector(state));
-        BOOL canSelectActiveFloor = floorGetter && parentGetter && stateGetter &&
-            strcmp(method_getTypeEncoding(floorGetter), "@16@0:8") == 0 &&
-            strcmp(method_getTypeEncoding(parentGetter), "@16@0:8") == 0 &&
-            strcmp(method_getTypeEncoding(stateGetter), "q16@0:8") == 0;
-        Method legacyFloorTransition = class_getInstanceMethod(legacyRoot, @selector(floorModifierForTransitionEvent:));
-        if (canSelectActiveFloor && legacyFloorTransition && strcmp(method_getTypeEncoding(legacyFloorTransition), "@24@0:8@16") == 0) {
-            MSHookMessageEx(legacyRoot, @selector(floorModifierForTransitionEvent:),
-                (IMP)TPPhoneLegacyFloorTransition, (IMP *)&TPOriginalLegacyFloorTransition);
-        }
-        Method legacyFloorGesture = class_getInstanceMethod(legacyRoot, @selector(floorModifierForGestureEvent:));
-        if (canSelectActiveFloor && legacyFloorGesture && strcmp(method_getTypeEncoding(legacyFloorGesture), "@24@0:8@16") == 0) {
-            MSHookMessageEx(legacyRoot, @selector(floorModifierForGestureEvent:),
-                (IMP)TPPhoneLegacyFloorGesture, (IMP *)&TPOriginalLegacyFloorGesture);
-        }
-        if (canSelectActiveFloor && TPPrepareLegacyPhoneAnimations()) {
-            MSHookMessageEx(legacyRoot, @selector(transitionModifierForMainTransitionEvent:),
-                (IMP)TPPhoneLegacyTransition, (IMP *)&TPOriginalLegacyPhoneTransition);
-            MSHookMessageEx(legacyRoot, @selector(gestureModifierForGestureEvent:),
-                (IMP)TPPhoneLegacyGesture, (IMP *)&TPOriginalLegacyPhoneGesture);
-        }
-        if (canInstallLegacySurfaceRetentionHook()) {
-            MSHookMessageEx(objc_getClass("SBMainSwitcherControllerCoordinator"),
-                @selector(switcherContentController:setCacheAsynchronousRenderingSurfaces:),
-                (IMP)TPPhoneLegacySurfaceRetention, (IMP *)&TPOriginalLegacySurfaceRetention);
         }
     }
 

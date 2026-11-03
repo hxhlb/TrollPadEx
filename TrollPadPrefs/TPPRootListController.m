@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <Preferences/PSSpecifier.h>
 #import "TPPRootListController.h"
+#import "../TPStageSwitcherPolicy.h"
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -57,6 +58,7 @@ static void TPRestartStageManager(void) {
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
         dispatch_get_main_queue(), ^{
+            if (TPHasStageSwitcherCoupling() && !TPStorediPadSwitcherEnabled()) return;
             [springBoardDefaults setBool:YES forKey:@"SBChamoisWindowingEnabled"];
             [springBoardDefaults synchronize];
         });
@@ -101,12 +103,20 @@ static BOOL TPPreferenceRequiresRespring(NSString *key) {
     [self refreshStageManagerControls];
 }
 
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    if (TPStageSwitcherNeedsRespring()) [self showRespringRequiredAlert];
+}
+
 - (void)dealloc {
     [NSNotificationCenter.defaultCenter removeObserver:self];
 }
 
 - (void)applicationDidBecomeActive:(NSNotification *)notification {
     [self refreshStageManagerControls];
+    if (TPStageSwitcherNeedsRespring() && self.view.window && self.navigationController.topViewController == self) {
+        [self showRespringRequiredAlert];
+    }
 }
 
 - (void)refreshStageManagerControls {
@@ -122,6 +132,9 @@ static BOOL TPPreferenceRequiresRespring(NSString *key) {
     BOOL useiPadSwitcher = TPReadSpringBoardBool(@"TPUseiPadAppSwitcher", YES);
     for (PSSpecifier *specifier in _specifiers) {
         NSString *key = [specifier propertyForKey:PSKeyNameKey];
+        if (TPHasStageSwitcherCoupling() && [key isEqualToString:@"TPUseiPadAppSwitcher"]) {
+            [self reloadSpecifier:specifier animated:YES];
+        }
         if ([key isEqualToString:@"TPScaleGridSwitcher"] ||
             [key isEqualToString:@"TPUseiPadAppSwitchingAnimation"] ||
             [key isEqualToString:@"TPMirrorStageManagerSwitcher"]) {
@@ -140,6 +153,16 @@ static BOOL TPPreferenceRequiresRespring(NSString *key) {
                 return [[specifier propertyForKey:@"id"] hasPrefix:@"APP_WINDOW_SCALING"];
             }];
             [specifiers removeObjectsAtIndexes:scalingRows];
+        }
+        if (TPHasStageSwitcherCoupling()) {
+            NSUInteger index = [specifiers indexOfObjectPassingTest:^BOOL(PSSpecifier *specifier, NSUInteger idx, BOOL *stop) {
+                return [[specifier propertyForKey:PSKeyNameKey] isEqualToString:@"TPUseiPadAppSwitcher"];
+            }];
+            if (index != NSNotFound) {
+                PSSpecifier *group = [PSSpecifier groupSpecifierWithName:nil];
+                [group setProperty:TPLocalized(@"Stage Manager requires iPad App Switcher on iOS 16–18. Turning off iPad App Switcher selects Split View. Respring to apply switcher changes.") forKey:@"footerText"];
+                [specifiers insertObject:group atIndex:index];
+            }
         }
         self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:TPLocalized(@"Respring") style:UIBarButtonItemStylePlain target:self action:@selector(respring)];
 
@@ -195,7 +218,9 @@ static BOOL TPPreferenceRequiresRespring(NSString *key) {
     BOOL restartStageManager = [key isEqualToString:@"TPStageManagerSide"] &&
         ![previousValue isEqual:value] && TPIsStageManagerEnabled();
 
-    [super setPreferenceValue:value specifier:specifier];
+    BOOL linked = TPBeginStageSwitcherWrite(key, value);
+    @try { [super setPreferenceValue:value specifier:specifier]; }
+    @finally { if (linked) TPEndStageSwitcherWrite(); }
     if ([key isEqualToString:@"TPUseiPadAppSwitcher"]) {
         [self refreshStageManagerControls];
     }
@@ -213,18 +238,23 @@ static BOOL TPPreferenceRequiresRespring(NSString *key) {
         [self reloadSpecifier:shortcutButtonsSpecifier animated:YES];
     }
 
-    if (TPPreferenceRequiresRespring(key) && !self.didShowRespringRequiredAlert) {
-        self.didShowRespringRequiredAlert = YES;
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:TPLocalized(@"Respring Required")
-            message:TPLocalized(@"This system option is applied after a respring.")
-            preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:TPLocalized(@"Later") style:UIAlertActionStyleCancel handler:nil]];
-        __weak typeof(self) weakSelf = self;
-        [alert addAction:[UIAlertAction actionWithTitle:TPLocalized(@"Respring Now") style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
-            [weakSelf respring];
-        }]];
-        [self presentViewController:alert animated:YES completion:nil];
+    if (TPPreferenceRequiresRespring(key) || TPStageSwitcherNeedsRespring()) {
+        [self showRespringRequiredAlert];
     }
+}
+
+- (void)showRespringRequiredAlert {
+    if (self.didShowRespringRequiredAlert || (TPHasStageSwitcherCoupling() && self.presentedViewController)) return;
+    self.didShowRespringRequiredAlert = YES;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:TPLocalized(@"Respring Required")
+        message:TPLocalized(@"This system option is applied after a respring.")
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:TPLocalized(@"Later") style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:TPLocalized(@"Respring Now") style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        [weakSelf respring];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)openDisplayArrangement {

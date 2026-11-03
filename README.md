@@ -8,8 +8,10 @@ separate window manager.
 
 - Stage Manager on iOS 16 and later, with configurable recent-app strip side.
 - Native Windowed Apps on iOS 26, alongside Stage Manager and Full Screen Apps.
-- Independent **iPad App Switcher**, enabled by default on supported systems.
-  Disable it to use iPhone cards while retaining multitasking; respring to apply.
+- **iPad App Switcher**, enabled by default. On iOS 16–18, enabling Stage Manager
+  enables this option; disabling it exits Stage Manager and selects Split View.
+  Respring when the switcher choice changes. iOS 15 retains an independent option;
+  iOS 26 retains its existing independent switcher/windowing behavior.
 - **Allow Smaller Windows** on iOS 26: resize below the native minimum in Stage
   Manager and Windowed Apps while each app manages its own layout. Default off.
 - Floating Dock, recent apps and App Library controls.
@@ -34,6 +36,12 @@ not proportionally shrink or stretch the whole app. Apps may clip content below
 sizes their interfaces support. See [the smaller-window behavior](docs/IOS26-SCALING.md).
 
 ## Validation and known limits
+
+The user accepted the 2.0.7 RootHide coupling candidate on the reported iOS 17
+phone. Host policy and native-entry contracts cover version boundaries, linked
+preference writers, boot/re-entry handling and preserved independent choices.
+No equivalent new real-device acceptance is claimed for iOS 15/16/18/26 or Rootless.
+
 
 The combined iOS 26.1 / 23B85 Rootless vphone regression covers phone-card
 removal through the last card, Home/relaunch, window resizing and revealing a

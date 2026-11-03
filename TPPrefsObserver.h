@@ -5,5 +5,6 @@
 @property(nonatomic, assign) NSInteger stageManagerSide;
 @property(nonatomic, assign) BOOL scaleAppWindows;
 @property(nonatomic, assign) BOOL useiPadAppSwitcher;
+@property(nonatomic, assign) BOOL stageManagerEnabled;
 @property(nonatomic, assign) BOOL appLibraryInDockEnabled;
 @end

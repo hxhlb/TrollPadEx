@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.0.7 — 2026-11-04
+
+### 简体中文
+
+- 改善 iOS 16–18 的 iPhone 应用切换体验。
+- iOS 16–18 台前调度自动开启 iPad 应用切换器；关闭该切换器会退出台前调度并选择分屏。切换器变更需 Respring。
+
+### English
+
+- Improved iPhone app switching on iOS 16–18.
+- On iOS 16–18, Stage Manager enables iPad App Switcher; turning it off selects Split View. Respring to apply switcher changes.
+
 ## 2.0.3 — 2026-10-12
 
 ### English

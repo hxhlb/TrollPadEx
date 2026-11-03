@@ -1,5 +1,8 @@
 # iOS 17 phone switcher candidate
 
+Historical investigation: superseded by the 2.0.7 native-entry/coupling policy.
+See [RELEASE-2.0.7.md](RELEASE-2.0.7.md) for the current release boundary.
+
 Later regression: test5/2.0.6 made foreground minimization and Dock icons
 transparent. Initial switcher-only acceptance was incomplete. The rejected
 minimize-test1 and current scope-test1 follow-up are tracked in

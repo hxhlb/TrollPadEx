@@ -1,5 +1,8 @@
 # iOS 17 foreground App minimization follow-up
 
+Historical investigation: superseded by the 2.0.7 native-entry/coupling policy.
+See [RELEASE-2.0.7.md](RELEASE-2.0.7.md) for the current release boundary.
+
 ## Current status: scope-test1, physical acceptance pending
 
 The user rejected `2.0.7~minimize-test1`: foreground minimization recovered, but

@@ -1,13 +1,16 @@
 # Independent switcher and native smaller windows
 
-Branch: `iya/ios26-window-scaling`. Candidate: `2.0.2+scale-test14`.
-Formal 2.0.2 artifacts remain unchanged; nothing is published.
+Current release: 2.0.7. On iOS 16/17/18, enabling Stage Manager enables iPad
+App Switcher; disabling the switcher exits Stage Manager and selects Split View.
+Respring applies switcher-stack changes. iOS 15 retains an independent choice;
+iOS 26 retains the window-aware integration described below. The following
+integration/test sections preserve historical iOS 26 evidence.
 
 ## Settings contracts
 
 - **iPad App Switcher** / `TPUseiPadAppSwitcher`, SpringBoard domain:
   default YES, including when the key is absent. The setting is shown on all
-  supported systems. NO selects native iPhone Deck cards. The applied choice
+  supported systems. NO selects native iPhone Deck cards; on iOS 16–18 it also selects Split View. The applied choice
   is latched at SpringBoard startup; changing it requires a respring. This avoids
   rebuilding controllers/gesture managers in the middle of a session. Grid
   scaling, mirroring and iPad animation controls are disabled in Settings when
@@ -28,7 +31,7 @@ Style 1 selects `SBDeckSwitcherViewController`; style 2 retains the existing iPa
 presentation. Older default-on raw styles defer to their original getter. The
 master-off paths defer to native styles and leave the new resize hooks inactive.
 
-Windowing must retain the iPad platform/window-aware root. Changing only the
+iOS 26 windowing must retain the iPad platform/window-aware root. Changing only the
 view-controller class left a grid, while replacing the complete root lost
 window resizing. The final factory hook targets
 `SBContinuousExposeRootSwitcherModifier multitaskingModifierForEvent:`. It
