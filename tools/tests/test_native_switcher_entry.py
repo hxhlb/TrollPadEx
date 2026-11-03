@@ -34,7 +34,8 @@ def contract(source):
     guard=source.index('    if (@available(iOS 26.0, *))',start)
     _,end=block(source,'    if (@available(iOS 26.0, *))',guard)
     startup+=source[start:end]
-    return FIXTURE+helper+'\nstatic UIUserInterfaceIdiom observedIdiom(void){'+idiom.replace('%orig','hardwareIdiom')+'}\n'+\
+    active,_=block(source,'static BOOL isStageManagerActive')
+    return FIXTURE+'static BOOL stageActive(void){'+active+'}\n'+helper+'\nstatic UIUserInterfaceIdiom observedIdiom(void){'+idiom.replace('%orig','hardwareIdiom')+'}\n'+\
         'static NSInteger rawStyle(void){'+raw.replace('%orig','originalStyle')+'}\n'+\
         'static NSInteger effectiveStyle(void){'+effective.replace('%orig','originalStyle')+'}\n'+\
         NATIVE+'\nstatic void create(id scene){'+factory.replace('%orig','NativeFactory(scene)')+'}\n'+\
@@ -49,6 +50,8 @@ FIXTURE=r'''
 typedef NSInteger UIUserInterfaceIdiom;
 enum{UIUserInterfaceIdiomPhone=0,UIUserInterfaceIdiomPad=1};
 static BOOL trollPadEnabled,useiPadAppSwitcher,throwFactory;
+static BOOL fixtureStageEnabled;
+static BOOL isStageManagerEnabled(void){return fixtureStageEnabled;}
 static NSInteger testMajor,originalStyle,hardwareIdiom,windowMode;
 static uint16_t forcePadIdiom,observedForce;
 static unsigned factoryCalls,prepareCalls,hookCalls;
@@ -87,6 +90,8 @@ static void MSHookMessageEx(Class cls,SEL command,IMP replacement,IMP *original)
  *original=class_getMethodImplementation(cls,command);hookCalls++;
 }
 #define NSProcessInfo TestProcessInfo
+#import "TPStageSwitcherPolicy.h"
+void TPStageSwitcherAppliedAtBoot(BOOL pad){}
 '''
 
 NATIVE=r'''
@@ -104,12 +109,15 @@ MAIN=r'''
 #define CHECK(e,message) do{if(!(e)){fprintf(stderr,"FAIL %s OS=%ld\n",message,(long)testMajor);return 1;}}while(0)
 int main(void){@autoreleasepool{
  Scene *main=Scene.new;main.isMainDisplayWindowScene=YES;Scene *external=Scene.new;
- for(NSNumber *version in @[@16,@17,@18,@26]){
+ for(NSNumber *version in @[@15,@16,@17,@18,@26]){
   testMajor=version.integerValue;
+  trollPadEnabled=YES;fixtureStageEnabled=YES;useiPadAppSwitcher=NO;
+  CHECK(stageActive()==!TPHasStageSwitcherCoupling(),"legacy Stage waits until the iPad root has been applied");
+  useiPadAppSwitcher=YES;CHECK(stageActive(),"applied iPad stack permits Stage");fixtureStageEnabled=NO;
   for(NSNumber *maskValue in @[@1,@0,@2,@3]){
    unsigned mask=maskValue.unsignedIntValue;
    trollPadEnabled=mask&1;useiPadAppSwitcher=!!(mask&2);hardwareIdiom=0;originalStyle=0;
-   BOOL nativeEntry=testMajor==17&&trollPadEnabled&&!useiPadAppSwitcher;
+   BOOL nativeEntry=TPHasStageSwitcherCoupling()&&trollPadEnabled&&!useiPadAppSwitcher;
    for(id scene in @[main,external,NSObject.new]){
     for(NSNumber *scope in @[@0,@7]){
      forcePadIdiom=scope.unsignedShortValue;uint16_t before=forcePadIdiom;
@@ -147,7 +155,7 @@ def run(source):
     generated=contract(source).replace('@available(iOS 26.0, *)','testMajor >= 26')
     with tempfile.TemporaryDirectory(prefix='trollpad-native-entry-') as directory:
         p=Path(directory);(p/'test.m').write_text(generated)
-        built=subprocess.run(RTK+['clang','-fobjc-arc','-framework','Foundation',str(p/'test.m'),'-o',str(p/'test')],capture_output=True,text=True)
+        built=subprocess.run(RTK+['clang','-fobjc-arc','-framework','Foundation','-I',str(ROOT),str(p/'test.m'),'-o',str(p/'test')],capture_output=True,text=True)
         if built.returncode:raise RuntimeError(built.stderr)
         return subprocess.run(RTK+[str(p/'test')],capture_output=True,text=True,timeout=10)
 

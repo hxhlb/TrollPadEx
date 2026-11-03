@@ -46,3 +46,5 @@
 "Unable to Respring" = "無法 Respring";
 "SpringBoard could not be restarted. Use the respring option in your jailbreak app." = "未能重新啟動 SpringBoard，請使用越獄工具中的 Respring 功能。";
 "Allow app windows below the system minimum size in Stage Manager and Windowed Apps on iOS 26. Apps manage their own layouts; content is not scaled or stretched." = "在 iOS 26 的幕前調度和視窗化 App 模式中，允許視窗小於系統最小尺寸。由 App 自行調整佈局，不縮放或拉伸內容。";
+
+"Stage Manager requires iPad App Switcher on iOS 16–18. Turning off iPad App Switcher selects Split View. Respring to apply switcher changes." = "iOS 16–18 的幕前調度需要 iPad App 切換器。關閉 iPad App 切換器會切換至分割顯示。更改切換器後需重新啟動 SpringBoard。";

@@ -7,6 +7,7 @@
 #import "TPPrefsObserver.h"
 #import "TPWindowScaling.h"
 #import "TPDockLibrary.h"
+#import "TPStageSwitcherPolicy.h"
 #import "UIKitPrivate.h"
 
 #include <assert.h>
@@ -70,6 +71,7 @@ typedef struct {
 } TPWindowingItemFrame;
 
 static BOOL isStageManagerEnabled() {
+    if (TPHasStageSwitcherCoupling()) return pref.stageManagerEnabled;
     id value = [NSUserDefaults.standardUserDefaults objectForKey:@"SBChamoisWindowingEnabled"];
     return value ? [value boolValue] : NO;
 }
@@ -87,7 +89,9 @@ static BOOL isMultitaskingActive() {
 }
 
 static BOOL isStageManagerActive() {
-    return trollPadEnabled && isStageManagerEnabled();
+    // A controller/root change still requires the existing respring workflow.
+    return trollPadEnabled && isStageManagerEnabled() &&
+        (!TPHasStageSwitcherCoupling() || useiPadAppSwitcher);
 }
 
 static BOOL isWindowingActive() {
@@ -537,7 +541,7 @@ static uint16_t forcePadIdiom = 0;
 
 static BOOL shouldCreateNativePhoneSwitcher(id scene) {
     if (!trollPadEnabled || useiPadAppSwitcher ||
-        NSProcessInfo.processInfo.operatingSystemVersion.majorVersion != 17) return NO;
+        !TPHasStageSwitcherCoupling()) return NO;
     SEL mainDisplay = @selector(isMainDisplayWindowScene);
     return [scene respondsToSelector:mainDisplay] &&
         ((BOOL (*)(id, SEL))objc_msgSend)(scene, mainDisplay);
@@ -693,6 +697,17 @@ static BOOL shouldCreateNativePhoneSwitcher(id scene) {
 - (void)_updateContentViewControllerIfNeeded {
     if (!trollPadEnabled) {
         return %orig;
+    }
+    if (TPHasStageSwitcherCoupling()) {
+        id scene = [(id)self respondsToSelector:@selector(windowScene)] ?
+            ((id (*)(id, SEL))objc_msgSend)(self, @selector(windowScene)) : nil;
+        if (shouldCreateNativePhoneSwitcher(scene)) {
+            uint16_t savedIdiom = forcePadIdiom;
+            forcePadIdiom = 0;
+            @try { %orig; }
+            @finally { forcePadIdiom = savedIdiom; }
+            return;
+        }
     }
     forcePadIdiom++;
     %orig;
@@ -1470,6 +1485,7 @@ static BOOL shouldForceMultitaskingProperty(CFStringRef property) {
         CFNotificationSuspensionBehaviorCoalesce);
     pref = [TPPrefsObserver new];
     useiPadAppSwitcher = pref.useiPadAppSwitcher;
+    TPStageSwitcherAppliedAtBoot(useiPadAppSwitcher);
     if (trollPadEnabled && !useiPadAppSwitcher) {
         TPPreparePhoneSwitcherCompatibility();
     }
