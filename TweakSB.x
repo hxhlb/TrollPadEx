@@ -1471,7 +1471,10 @@ static BOOL shouldForceMultitaskingProperty(CFStringRef property) {
             @selector(multitaskingModifierForEvent:),
             (IMP)TPPhoneContinuousExposeFactory, (IMP *)&TPOriginalContinuousExposeFactory);
     }
-    if (@available(iOS 26.0, *)) {
+    // iOS 17's mode-2 factory creates MixedGrid before checking switcher style.
+    // Keep other legacy versions on their existing native creation paths.
+    NSInteger mainSwitcherVersion = NSProcessInfo.processInfo.operatingSystemVersion.majorVersion;
+    if (mainSwitcherVersion == 17 || mainSwitcherVersion >= 26) {
         Method mainPresentation = class_getInstanceMethod(objc_getClass("SBMainSwitcherRootSwitcherModifier"),
             @selector(_newMultitaskingModifierForEnvironmentMode:));
         if (mainPresentation && strcmp(method_getTypeEncoding(mainPresentation), "@24@0:8q16") == 0 &&
