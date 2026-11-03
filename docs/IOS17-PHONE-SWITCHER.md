@@ -1,5 +1,11 @@
 # iOS 17 phone switcher candidate
 
+Later regression: test5/2.0.6 made foreground minimization and Dock icons
+transparent. Initial switcher-only acceptance was incomplete. The rejected
+minimize-test1 and current scope-test1 follow-up are tracked in
+[IOS17-MINIMIZE-REGRESSION.md](IOS17-MINIMIZE-REGRESSION.md); neither is
+validated as a complete physical fix. The test5 description below is history.
+
 ## Acceptance and 2.0.6 release
 
 On 2026-11-03 the user confirmed that the latest test5 candidate works perfectly

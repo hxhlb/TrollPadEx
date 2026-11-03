@@ -1,5 +1,61 @@
 # iOS 17 foreground App minimization follow-up
 
+## Current status: scope-test1, physical acceptance pending
+
+The user rejected `2.0.7~minimize-test1`: foreground minimization recovered, but
+idle switcher entry became wrong again. Its phase guard is superseded; the
+historical explanation below is not a claim of combined success.
+
+`2.0.7~switcher-scope-test1` removes the Home-floor substitution and permanent
+Deck child completely. Native Home/App routing retains its identity throughout
+all transition phases. Foreground App gestures are delegated to the original
+factory; only Home/Deck gestures and the four explicit switcher entry/exit
+transitions get phone switcher drivers. The live-owned Deck floor correction
+and completed-object lifetime safeguards remain. iOS 26 code paths are unchanged.
+
+The only replacement for the earlier Home-floor cache policy is the native
+coordinator's `switcherContentController:setCacheAsynchronousRenderingSurfaces:`
+request. A false request becomes true only for the exact Deck content controller
+currently owned by the embedded display, while its real switcher controller is
+in Home mode, TrollPadEx is enabled, and the startup iPad switcher choice is off.
+Other requests keep their value, and the original delegate is called once.
+There is no App/Dock alpha, frame or animation-duration override.
+
+21D61 native evidence (arm64e image UUID
+`7346EBA7-83F7-30E7-9D81-18C47EA290EF`):
+
+- `_updateAsynchronousSurfaceRetentionAssertion`, `0x1d3467f0c`, reads the root
+  query and forwards its Boolean to that coordinator delegate.
+- Coordinator setter `0x1d373c888`, ABI `v28@0:8@16B24`, maintains a weak request
+  set and the native asynchronous surface-cache disable timer. Its native
+  `disableAsyncRenderingSurfaceRetention` policy still runs. This candidate
+  neither changes that setting nor edits the timer duration.
+- Embedded-display identity check `0x1d3748bc8`, ABI `B24@0:8@16`, compares the
+  current embedded switcher controller's content by identity.
+- Native phone Home floor requests surface retention at `0x1d35396ac`.
+  This is evidence for copying a cache policy instead of Home-floor geometry;
+  it does not prove the user's visual artifact has this sole cause.
+
+Host contracts first fail against 2.0.6's permanent desktop Deck injection,
+then pass native Home/App floor identity across phases 0–3, untouched App
+minimize driver, switcher transitions, retired Deck handling and Home-only cache
+request guards. OS/default/native-specialized fallbacks are covered. These are
+callback fixtures, not SpringBoard animation proof.
+
+Physical acceptance must cover one installed build: minimize Apps and verify
+Dock icons, cancel a minimize gesture, enter/leave the switcher from Home and an
+App, then repeat after 5–8 seconds and 20–30 seconds on Home. Also check card
+dismissal. No automatic device install, respring, push or APT publication.
+
+Both scope-test1 schemes passed compilation and package checks. Settings resources
+and all arm64/arm64e `__text` slices for TrollPadUI and the preferences bundle
+match 2.0.6. No probes, tests, diagnostics or media are packaged. The package
+manifest and matching scheme-specific symbols remain in ignored local research/
+release directories. Signature load commands were checked; this is not a claim
+of device-side loader acceptance or independent cryptographic verification.
+
+## Historical minimize-test1 (superseded)
+
 After accepting switcher behavior in test5/2.0.6, the user reported foreground
 Apps becoming transparent during minimization and Dock icons remaining hidden.
 They confirmed this also happens with the independent animation tweak disabled.
