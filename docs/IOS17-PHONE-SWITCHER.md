@@ -1,5 +1,51 @@
 # iOS 17 phone switcher candidate
 
+## Test4: native Deck gesture and entry/exit transitions
+
+The user confirmed test3 no longer crashed, then reported abrupt switcher
+entry/exit. The supplied six-second recording shows cards appearing at the
+screen edge before jumping to their final Deck position, and disappearing
+without a matching exit transition. Frame review is diagnostic evidence, not
+a benchmark or a statement about other users' frame rates.
+
+In the 21D61 image, the retained iPad `SBMainSwitcherRootSwitcherModifier`
+returns nil for the ordinary style-1 main transitions and the type-1 bottom-edge
+gesture. The native phone root instead creates `SBHomeGestureRootSwitcherModifier`
+with a fresh Deck and its native resign-transition flag, `SBHomeToDeckSwitcherModifier`
+for Home/switcher transitions, and `SBDeckToFullScreenSwitcherModifier` for
+App/switcher transitions. The phone factory's direction is 1 when entering
+the switcher and 0 when leaving it. Relevant initializer/getter signatures and
+the Main root's environment-mode ivar encoding were checked in the same image.
+
+Candidate `2.0.6~switcher-test4` supplies those native objects only when the
+iOS-17 Main root returns nil, the tweak is enabled and the startup iPad choice
+is off. It retains the existing platform/windowing root and test3's floor
+lifetime correction. It does not reuse completed transition Decks, synthesize
+animation curves, force animation duration, or disable Reduce Motion.
+Native non-nil results and unrelated, App Expose, floating, Peek, banner,
+Continuity and display-move transitions are preserved. The new animation
+hooks require matching native classes, method signatures and ivar layout.
+
+`test_phone_switcher_animations.py` extracts the production callbacks and
+installation block, checking native gesture initialization, all four ordinary
+Home/App entry/exit routes, IDs, directions, layouts, fresh Deck identity,
+original-result identity, special-case fallbacks, master/default behavior and
+OS boundaries. It reproduces test3's absent Deck gesture and passes test4 with
+host-only native-path fixtures. The existing floor lifecycle regression remains
+required. Neither test replaces real SpringBoard animation acceptance.
+
+Manual check: with the iPad switcher off and after respring, enter from Home,
+exit to Home, enter from an App and select a card. Repeat several cycles and
+dismiss cards. Verify the native iPad grid still returns after enabling the
+option and respringing. Physical test4 acceptance is pending; no publication
+or automatic phone installation is part of this handoff.
+
+Both test4 packaging schemes passed build/payload checks with the existing
+Settings resources unchanged and no test fixtures, probes, or recording media
+included. Hashes are recorded in the ignored
+`packages/release/ios17-switcher-test4/validation.json`; RootHide debug symbols
+are retained locally for matching any subsequent report.
+
 ## Test3: do not retain a removed/completed floor
 
 The physical `SpringBoard-2026-11-03-162839.ips` matches test2's RootHide UUID

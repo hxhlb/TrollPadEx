@@ -505,6 +505,106 @@ static id TPPhoneLegacyFloorGesture(id self, SEL command, id event) {
     return TPPhoneLegacyFloor(self, TPOriginalLegacyFloorGesture(self, command, event));
 }
 
+@interface NSObject (TPPhoneLegacyAnimations)
+- (instancetype)initWithStartingEnvironmentMode:(NSInteger)mode multitaskingModifier:(id)modifier;
+- (instancetype)initWithTransitionID:(id)identifier direction:(NSInteger)direction multitaskingModifier:(id)modifier;
+- (instancetype)initWithTransitionID:(id)identifier direction:(NSInteger)direction fullScreenAppLayout:(id)layout deckModifier:(id)modifier;
+- (void)setResignsTransitionIntoAppSwitcher:(BOOL)value;
+@end
+
+static Ivar TPPhoneLegacyEnvironmentIvar;
+static BOOL TPPrepareLegacyPhoneAnimations(void) {
+    const struct { const char *className; const char *selector; const char *types; } methods[] = {
+        {"SBMainSwitcherRootSwitcherModifier", "gestureModifierForGestureEvent:", "@24@0:8@16"},
+        {"SBMainSwitcherRootSwitcherModifier", "transitionModifierForMainTransitionEvent:", "@24@0:8@16"},
+        {"SBHomeGestureRootSwitcherModifier", "initWithStartingEnvironmentMode:multitaskingModifier:", "@32@0:8q16@24"},
+        {"SBHomeGestureRootSwitcherModifier", "setResignsTransitionIntoAppSwitcher:", "v20@0:8B16"},
+        {"SBHomeToDeckSwitcherModifier", "initWithTransitionID:direction:multitaskingModifier:", "@40@0:8@16q24@32"},
+        {"SBDeckToFullScreenSwitcherModifier", "initWithTransitionID:direction:fullScreenAppLayout:deckModifier:", "@48@0:8@16q24@32@40"},
+        {"SBGestureSwitcherModifierEvent", "gestureType", "q16@0:8"},
+        {"SBTransitionSwitcherModifierEvent", "fromEnvironmentMode", "q16@0:8"},
+        {"SBTransitionSwitcherModifierEvent", "toEnvironmentMode", "q16@0:8"},
+        {"SBTransitionSwitcherModifierEvent", "fromAppLayout", "@16@0:8"},
+        {"SBTransitionSwitcherModifierEvent", "toAppLayout", "@16@0:8"},
+        {"SBTransitionSwitcherModifierEvent", "fromFloatingAppLayout", "@16@0:8"},
+        {"SBTransitionSwitcherModifierEvent", "toFloatingAppLayout", "@16@0:8"},
+        {"SBTransitionSwitcherModifierEvent", "fromAppExposeBundleID", "@16@0:8"},
+        {"SBTransitionSwitcherModifierEvent", "toAppExposeBundleID", "@16@0:8"},
+        {"SBTransitionSwitcherModifierEvent", "fromPeekConfiguration", "q16@0:8"},
+        {"SBTransitionSwitcherModifierEvent", "toPeekConfiguration", "q16@0:8"},
+        {"SBTransitionSwitcherModifierEvent", "transitionID", "@16@0:8"},
+        {"SBTransitionSwitcherModifierEvent", "isBannerUnfurlTransition", "B16@0:8"},
+        {"SBTransitionSwitcherModifierEvent", "isContinuityTransition", "B16@0:8"},
+        {"SBTransitionSwitcherModifierEvent", "isMoveDisplaysTransition", "B16@0:8"},
+    };
+    for (NSUInteger i = 0; i < sizeof(methods) / sizeof(methods[0]); i++) {
+        Method method = class_getInstanceMethod(objc_getClass(methods[i].className), sel_registerName(methods[i].selector));
+        if (!method || strcmp(method_getTypeEncoding(method), methods[i].types) != 0) return NO;
+    }
+    Class root = objc_getClass("SBMainSwitcherRootSwitcherModifier");
+    Ivar mode = class_getInstanceVariable(root, "_environmentMode");
+    if (!mode || strcmp(ivar_getTypeEncoding(mode), "q") != 0 || ivar_getOffset(mode) < 0 ||
+        ivar_getOffset(mode) + sizeof(NSInteger) > class_getInstanceSize(root)) return NO;
+    TPPhoneLegacyEnvironmentIvar = mode;
+    return YES;
+}
+
+static id (*TPOriginalLegacyPhoneTransition)(id, SEL, id);
+static id TPPhoneLegacyTransition(id self, SEL command, id event) {
+    id proposed = TPOriginalLegacyPhoneTransition(self, command, event);
+    if (proposed || !trollPadEnabled || useiPadAppSwitcher ||
+        object_getClass(self) != objc_getClass("SBMainSwitcherRootSwitcherModifier") ||
+        ![event isKindOfClass:objc_getClass("SBTransitionSwitcherModifierEvent")]) return proposed;
+    NSInteger from = ((NSInteger (*)(id, SEL))objc_msgSend)(event, @selector(fromEnvironmentMode));
+    NSInteger to = ((NSInteger (*)(id, SEL))objc_msgSend)(event, @selector(toEnvironmentMode));
+    BOOL home = (from == 1 && to == 2) || (from == 2 && to == 1);
+    BOOL app = (from == 3 && to == 2) || (from == 2 && to == 3);
+    if (!home && !app) return proposed;
+    for (NSString *name in @[@"isBannerUnfurlTransition", @"isContinuityTransition", @"isMoveDisplaysTransition"]) {
+        if (((BOOL (*)(id, SEL))objc_msgSend)(event, NSSelectorFromString(name))) return proposed;
+    }
+    for (NSString *name in @[@"fromAppExposeBundleID", @"toAppExposeBundleID", @"fromFloatingAppLayout", @"toFloatingAppLayout"]) {
+        if (((id (*)(id, SEL))objc_msgSend)(event, NSSelectorFromString(name))) return proposed;
+    }
+    NSInteger fromPeek = ((NSInteger (*)(id, SEL))objc_msgSend)(event, @selector(fromPeekConfiguration));
+    NSInteger toPeek = ((NSInteger (*)(id, SEL))objc_msgSend)(event, @selector(toPeekConfiguration));
+    // Matches SBPeekConfigurationIsValid on iOS 17: only values 2 and 3.
+    if ((fromPeek & ~1L) == 2 || (toPeek & ~1L) == 2) return proposed;
+    id layout = app ? ((id (*)(id, SEL))objc_msgSend)(event,
+        to == 2 ? @selector(fromAppLayout) : @selector(toAppLayout)) : nil;
+    if (app && !layout) return proposed;
+    TPPreparePhoneSwitcherCompatibility();
+    if (!TPPhoneDeckClass) return proposed;
+    id deck = [[TPPhoneDeckClass alloc] init];
+    id identifier = ((id (*)(id, SEL))objc_msgSend)(event, @selector(transitionID));
+    if (home) {
+        return [[objc_getClass("SBHomeToDeckSwitcherModifier") alloc]
+            initWithTransitionID:identifier direction:to == 2 ? 1 : 0 multitaskingModifier:deck];
+    }
+    return [[objc_getClass("SBDeckToFullScreenSwitcherModifier") alloc]
+        initWithTransitionID:identifier direction:to == 2 ? 1 : 0 fullScreenAppLayout:layout deckModifier:deck];
+}
+
+static id (*TPOriginalLegacyPhoneGesture)(id, SEL, id);
+static id TPPhoneLegacyGesture(id self, SEL command, id event) {
+    id proposed = TPOriginalLegacyPhoneGesture(self, command, event);
+    if (proposed || !trollPadEnabled || useiPadAppSwitcher || !TPPhoneLegacyEnvironmentIvar ||
+        object_getClass(self) != objc_getClass("SBMainSwitcherRootSwitcherModifier") ||
+        ![event isKindOfClass:objc_getClass("SBGestureSwitcherModifierEvent")] ||
+        ((NSInteger (*)(id, SEL))objc_msgSend)(event, @selector(gestureType)) != 1) return proposed;
+    NSInteger mode = 0;
+    memcpy(&mode, (const char *)(__bridge const void *)self + ivar_getOffset(TPPhoneLegacyEnvironmentIvar), sizeof(mode));
+    if (mode < 1 || mode > 3) return proposed;
+    TPPreparePhoneSwitcherCompatibility();
+    if (!TPPhoneDeckClass) return proposed;
+    id floor = ((id (*)(id, SEL))objc_msgSend)(self, @selector(floorModifier));
+    if (mode == 2 && object_getClass(floor) != TPPhoneDeckClass) return proposed;
+    id gesture = [[objc_getClass("SBHomeGestureRootSwitcherModifier") alloc]
+        initWithStartingEnvironmentMode:mode multitaskingModifier:[[TPPhoneDeckClass alloc] init]];
+    [gesture setResignsTransitionIntoAppSwitcher:YES];
+    return gesture;
+}
+
 static BOOL canInstallStageManagerCapabilityHooks() {
     Class appSwitcherDefaultsClass = objc_getClass("SBAppSwitcherDefaults");
     Class applicationClass = objc_getClass("SBApplication");
@@ -1528,6 +1628,12 @@ static BOOL shouldForceMultitaskingProperty(CFStringRef property) {
         if (canSelectActiveFloor && legacyFloorGesture && strcmp(method_getTypeEncoding(legacyFloorGesture), "@24@0:8@16") == 0) {
             MSHookMessageEx(legacyRoot, @selector(floorModifierForGestureEvent:),
                 (IMP)TPPhoneLegacyFloorGesture, (IMP *)&TPOriginalLegacyFloorGesture);
+        }
+        if (canSelectActiveFloor && TPPrepareLegacyPhoneAnimations()) {
+            MSHookMessageEx(legacyRoot, @selector(transitionModifierForMainTransitionEvent:),
+                (IMP)TPPhoneLegacyTransition, (IMP *)&TPOriginalLegacyPhoneTransition);
+            MSHookMessageEx(legacyRoot, @selector(gestureModifierForGestureEvent:),
+                (IMP)TPPhoneLegacyGesture, (IMP *)&TPOriginalLegacyPhoneGesture);
         }
     }
 
