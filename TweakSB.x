@@ -483,6 +483,7 @@ static id TPPhoneMainSwitcherFactory(id self, SEL command, NSInteger mode) {
 
 static Ivar TPPhoneLegacyEnvironmentIvar, TPPhoneLegacyFloatingIvar, TPPhoneLegacyPeekIvar;
 static BOOL TPPhoneLegacyHomeFloorReady;
+static char TPPhoneLegacyAppReturnPending;
 static id (*TPOriginalLegacyMultitaskingFactory)(id, SEL, id);
 static id TPPhoneLegacyMultitaskingFactory(id self, SEL command, id event) {
     id proposed = TPOriginalLegacyMultitaskingFactory(self, command, event);
@@ -506,10 +507,21 @@ static id TPPhoneLegacyFloor(id root, id proposed, id event) {
         BOOL floating = NO, peek = NO;
         if ([event isKindOfClass:objc_getClass("SBTransitionSwitcherModifierEvent")]) {
             mode = ((NSInteger (*)(id, SEL))objc_msgSend)(event, @selector(toEnvironmentMode));
+            NSInteger from = ((NSInteger (*)(id, SEL))objc_msgSend)(event, @selector(fromEnvironmentMode));
+            // The Home floor hides app content. Keep the native App-return
+            // floor until the icon/minimize transition has actually ended.
+            if (from == 3 && mode == 1) {
+                BOOL pending = ((NSUInteger (*)(id, SEL))objc_msgSend)(event, @selector(phase)) != 3;
+                objc_setAssociatedObject(root, &TPPhoneLegacyAppReturnPending, pending ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            } else if (mode != 1 || from == 2) {
+                objc_setAssociatedObject(root, &TPPhoneLegacyAppReturnPending, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+            if (objc_getAssociatedObject(root, &TPPhoneLegacyAppReturnPending)) return proposed;
             floating = ((BOOL (*)(id, SEL))objc_msgSend)(event, @selector(toFloatingSwitcherVisible));
             NSInteger configuration = ((NSInteger (*)(id, SEL))objc_msgSend)(event, @selector(toPeekConfiguration));
             peek = (configuration & ~1L) == 2;
         } else {
+            if (objc_getAssociatedObject(root, &TPPhoneLegacyAppReturnPending)) return proposed;
             const char *bytes = (__bridge const void *)root;
             memcpy(&mode, bytes + ivar_getOffset(TPPhoneLegacyEnvironmentIvar), sizeof(mode));
             memcpy(&floating, bytes + ivar_getOffset(TPPhoneLegacyFloatingIvar), sizeof(floating));
@@ -568,6 +580,7 @@ static BOOL TPPrepareLegacyPhoneAnimations(void) {
         {"SBGestureSwitcherModifierEvent", "gestureType", "q16@0:8"},
         {"SBTransitionSwitcherModifierEvent", "fromEnvironmentMode", "q16@0:8"},
         {"SBTransitionSwitcherModifierEvent", "toEnvironmentMode", "q16@0:8"},
+        {"SBTransitionSwitcherModifierEvent", "phase", "Q16@0:8"},
         {"SBTransitionSwitcherModifierEvent", "toFloatingSwitcherVisible", "B16@0:8"},
         {"SBTransitionSwitcherModifierEvent", "fromAppLayout", "@16@0:8"},
         {"SBTransitionSwitcherModifierEvent", "toAppLayout", "@16@0:8"},

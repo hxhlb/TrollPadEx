@@ -10,6 +10,7 @@ FIXTURES = r'''
 static id nativeTransition, nativeGesture;
 @interface SBTransitionSwitcherModifierEvent : NSObject
 @property NSInteger fromEnvironmentMode,toEnvironmentMode,fromPeekConfiguration,toPeekConfiguration;
+@property NSUInteger phase;
 @property(strong) id fromAppLayout,toAppLayout,fromFloatingAppLayout,toFloatingAppLayout;
 @property(strong) id fromAppExposeBundleID,toAppExposeBundleID,transitionID;
 @property BOOL isBannerUnfurlTransition,isContinuityTransition,isMoveDisplaysTransition;
@@ -121,6 +122,37 @@ int main(void){@autoreleasepool{
         CHECK(hookCalls==(testMajor==17?6:(testMajor>=26?1:0)),"phone subtree and animation hooks confined to iOS17; other paths unchanged");
         trollPadEnabled=YES;useiPadAppSwitcher=NO;
         root.floorFixture=SBMainSwitcherRoutingSwitcherModifier.new;
+        // Main root writes toEnvironmentMode before processing transition phases.
+        root->_environmentMode=1;
+        event.fromEnvironmentMode=3;event.toEnvironmentMode=1;event.toPeekConfiguration=1;
+        for(NSNumber *phase in @[@0,@1,@2]){
+            event.phase=phase.unsignedIntegerValue;
+            CHECK([root floorModifierForTransitionEvent:event]==root.floorFixture,
+                "foreground App minimization must retain its native floor until transitionDidEnd");
+            CHECK([root floorModifierForGestureEvent:nil]==root.floorFixture,
+                "gesture-floor queries must also preserve an unfinished App return after root mode becomes Home");
+        }
+        event.fromEnvironmentMode=1;event.phase=1;
+        CHECK([root floorModifierForTransitionEvent:event]==root.floorFixture,
+            "nested Home update cannot prematurely finish an App return");
+        event.fromEnvironmentMode=3;
+        event.phase=3;
+        id settled=[root floorModifierForTransitionEvent:event];
+        CHECK(testMajor==17?[settled isMemberOfClass:_SBHomeScreenFloorSwitcherModifier.class]:settled==root.floorFixture,
+            "idle Home policy is restored after App minimization completes");
+        event.fromEnvironmentMode=3;event.toEnvironmentMode=1;event.phase=1;
+        CHECK([root floorModifierForTransitionEvent:event]==root.floorFixture,"new App return begins natively");
+        event.toEnvironmentMode=3;event.phase=3;
+        CHECK([root floorModifierForTransitionEvent:event]==root.floorFixture,"cancelled return stays in native App route");
+        event.fromEnvironmentMode=1;event.toEnvironmentMode=1;event.phase=1;
+        id afterCancel=[root floorModifierForTransitionEvent:event];
+        CHECK(testMajor==17?[afterCancel isMemberOfClass:_SBHomeScreenFloorSwitcherModifier.class]:afterCancel==root.floorFixture,
+            "cancellation clears the pending App-return guard");
+        event.fromEnvironmentMode=2;event.phase=1;
+        id switcherExit=[root floorModifierForTransitionEvent:event];
+        CHECK(testMajor==17?[switcherExit isMemberOfClass:_SBHomeScreenFloorSwitcherModifier.class]:switcherExit==root.floorFixture,
+            "existing switcher-to-Home animation path stays enabled");
+        event.fromEnvironmentMode=1;event.phase=0;
         event.toEnvironmentMode=1;event.toPeekConfiguration=1;
         event.toFloatingSwitcherVisible=YES;
         CHECK([root floorModifierForTransitionEvent:event]==root.floorFixture,"Home with floating switcher keeps native window route");
@@ -196,7 +228,7 @@ def main():
         old = subprocess.check_output(RTK + ['git', 'show', args.baseline_ref + ':TweakSB.x'], cwd=ROOT, text=True)
         result = run(old)
         assert result.returncode and 'iOS=17' in result.stderr, result.stdout + result.stderr
-        print('PASS baseline missing-animation path reproduced: ' + result.stderr.strip())
+        print('PASS baseline regression reproduced: ' + result.stderr.strip())
     result = run((ROOT / 'TweakSB.x').read_text())
     assert result.returncode == 0, result.stdout + result.stderr
     print(result.stdout.strip())
