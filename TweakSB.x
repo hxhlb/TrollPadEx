@@ -535,6 +535,14 @@ static BOOL hasWindowingItemFrameMethod(Class modifierClass) {
 
 static uint16_t forcePadIdiom = 0;
 
+static BOOL shouldCreateNativePhoneSwitcher(id scene) {
+    if (!trollPadEnabled || useiPadAppSwitcher ||
+        NSProcessInfo.processInfo.operatingSystemVersion.majorVersion != 17) return NO;
+    SEL mainDisplay = @selector(isMainDisplayWindowScene);
+    return [scene respondsToSelector:mainDisplay] &&
+        ((BOOL (*)(id, SEL))objc_msgSend)(scene, mainDisplay);
+}
+
 %hook UIDevice
 - (UIUserInterfaceIdiom)userInterfaceIdiom {
     if (!trollPadEnabled) {
@@ -661,6 +669,18 @@ static uint16_t forcePadIdiom = 0;
 - (void)_loadContentViewControllerIfNecessaryForWindowScene:(id)scene {
     if (!trollPadEnabled) {
         return %orig;
+    }
+    if (shouldCreateNativePhoneSwitcher(scene)) {
+        // Let the native factory choose the phone root as well as Deck cards.
+        // Suppress an enclosing iPad scope only for this creation call.
+        uint16_t savedIdiom = forcePadIdiom;
+        forcePadIdiom = 0;
+        @try {
+            %orig;
+        } @finally {
+            forcePadIdiom = savedIdiom;
+        }
+        return;
     }
     forcePadIdiom++;
     %orig;
