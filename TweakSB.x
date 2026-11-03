@@ -481,18 +481,18 @@ static id TPPhoneMainSwitcherFactory(id self, SEL command, NSInteger mode) {
     return TPOriginalMainSwitcherFactory(self, command, mode);
 }
 
-static char TPPhoneLegacyFloorAssociation;
 static id TPPhoneLegacyFloor(id root, id proposed) {
     if (!proposed || !trollPadEnabled || useiPadAppSwitcher ||
         object_getClass(proposed) != objc_getClass("SBMixedGridSwitcherModifier")) return proposed;
     TPPreparePhoneSwitcherCompatibility();
     if (!TPPhoneDeckClass) return proposed;
-    id deck = objc_getAssociatedObject(root, &TPPhoneLegacyFloorAssociation);
-    if (!deck) {
-        deck = [[TPPhoneDeckClass alloc] init];
-        objc_setAssociatedObject(root, &TPPhoneLegacyFloorAssociation, deck, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    return deck ?: proposed;
+    id deck = ((id (*)(id, SEL))objc_msgSend)(root, @selector(floorModifier));
+    // Removed modifiers are completed and their query chain is disconnected.
+    // Reuse only the active floor still owned by this root, never a saved copy.
+    if (object_getClass(deck) == TPPhoneDeckClass &&
+        ((id (*)(id, SEL))objc_msgSend)(deck, @selector(parentModifier)) == root &&
+        ((NSInteger (*)(id, SEL))objc_msgSend)(deck, @selector(state)) == 0) return deck;
+    return [[TPPhoneDeckClass alloc] init] ?: proposed;
 }
 
 static id (*TPOriginalLegacyFloorTransition)(id, SEL, id);
@@ -1512,13 +1512,20 @@ static BOOL shouldForceMultitaskingProperty(CFStringRef property) {
         // iOS 17's transition factory allocates MixedGrid directly. The gesture
         // selector branches directly to that implementation, bypassing ObjC dispatch.
         Class legacyRoot = objc_getClass("SBMainSwitcherRootSwitcherModifier");
+        Method floorGetter = class_getInstanceMethod(legacyRoot, @selector(floorModifier));
+        Method parentGetter = class_getInstanceMethod(objc_getClass("SBDeckSwitcherModifier"), @selector(parentModifier));
+        Method stateGetter = class_getInstanceMethod(objc_getClass("SBDeckSwitcherModifier"), @selector(state));
+        BOOL canSelectActiveFloor = floorGetter && parentGetter && stateGetter &&
+            strcmp(method_getTypeEncoding(floorGetter), "@16@0:8") == 0 &&
+            strcmp(method_getTypeEncoding(parentGetter), "@16@0:8") == 0 &&
+            strcmp(method_getTypeEncoding(stateGetter), "q16@0:8") == 0;
         Method legacyFloorTransition = class_getInstanceMethod(legacyRoot, @selector(floorModifierForTransitionEvent:));
-        if (legacyFloorTransition && strcmp(method_getTypeEncoding(legacyFloorTransition), "@24@0:8@16") == 0) {
+        if (canSelectActiveFloor && legacyFloorTransition && strcmp(method_getTypeEncoding(legacyFloorTransition), "@24@0:8@16") == 0) {
             MSHookMessageEx(legacyRoot, @selector(floorModifierForTransitionEvent:),
                 (IMP)TPPhoneLegacyFloorTransition, (IMP *)&TPOriginalLegacyFloorTransition);
         }
         Method legacyFloorGesture = class_getInstanceMethod(legacyRoot, @selector(floorModifierForGestureEvent:));
-        if (legacyFloorGesture && strcmp(method_getTypeEncoding(legacyFloorGesture), "@24@0:8@16") == 0) {
+        if (canSelectActiveFloor && legacyFloorGesture && strcmp(method_getTypeEncoding(legacyFloorGesture), "@24@0:8@16") == 0) {
             MSHookMessageEx(legacyRoot, @selector(floorModifierForGestureEvent:),
                 (IMP)TPPhoneLegacyFloorGesture, (IMP *)&TPOriginalLegacyFloorGesture);
         }

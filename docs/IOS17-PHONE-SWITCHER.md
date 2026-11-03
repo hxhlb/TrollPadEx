@@ -1,5 +1,47 @@
 # iOS 17 phone switcher candidate
 
+## Test3: do not retain a removed/completed floor
+
+The physical `SpringBoard-2026-11-03-162839.ips` matches test2's RootHide UUID
+`6DAA8B7F-F8AE-3C09-ADBA-C70827435A2D`. Its Objective-C exception occurs in
+`MethodCacheDispatchDataForSelectorIndex +392`, reached from
+`SBFluidSwitcherViewController _updateAnimatableProperties +104`. The matching
+21D61 image identifies `animatablePropertyIdentifiers` at that call site and
+the native assertion text as `couldn't find implementor for %@`. The nearby
+Foundation dictionary symbol is not evidence of a preference-file failure.
+
+Test2 held its replacement Deck in an association after native removal.
+The native removal path sets modifier state to 1, disconnects the query chain,
+and clears its parent; adding a modifier does not reset its state. The expanded
+host lifecycle fixture consequently reproduces test2 returning that retired
+object on the second opening. This is a concrete lifetime defect consistent
+with the report; physical causality and recovery still need repeat-cycle tests.
+
+Candidate `2.0.6~switcher-test3` removes that association. It reuses only the
+current native floor of the expected Deck class when its parent is the same
+root and its state is 0. Otherwise it allocates a fresh native Deck. Getter
+signatures for floor, parent, and state are checked before installing these
+iOS-17-only floor hooks. Native transitions and query algorithms are retained;
+there is no assertion suppression or fabricated empty query result.
+
+Production-callback tests now cover repeated enter/remove/re-enter sessions,
+active-floor reuse, completed floors still attached, cross-root ownership,
+and the earlier original-result/OS/ABI boundaries. They fail the lifecycle case
+against test2 (`b96eb06`) and pass test3. These remain fixtures informed by the
+native implementation, not execution of SpringBoard's UI.
+
+A separate native-process lifecycle experiment was blocked by the system's
+SpringBoardUI framework load restriction before its lifecycle checks executed.
+That failed probe is not counted as original-code runtime validation and did
+not attach to or execute code inside SpringBoard. No test3 installation or
+device respring is part of this handoff; real-device acceptance is pending.
+
+Both test3 packaging schemes passed build/payload checks, including unchanged
+Settings resources, arm64/arm64e slices with signature commands, and exclusion
+of probes/tests. Their hashes are saved under the ignored
+`packages/release/ios17-switcher-test3/validation.json`. Device crash recovery
+and repeated real UI transitions have not been performed by this handoff.
+
 ## Test2: replace the actual legacy floor
 
 The user reported no visual correction with test1. Read-only task-memory checks

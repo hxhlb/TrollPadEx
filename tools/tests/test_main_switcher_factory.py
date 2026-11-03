@@ -22,12 +22,16 @@ def contract(source):
     fixture = r'''
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #include <stdio.h>
 static BOOL trollPadEnabled, useiPadAppSwitcher, missingDeck, wrongABI, missingFactory;
 static NSInteger testMajor;
 static unsigned hookCalls, originalCalls, floorCalls;
 static Class TPPhoneDeckClass;
-@interface SBDeckSwitcherModifier : NSObject @end
+@interface SBDeckSwitcherModifier : NSObject
+@property(nonatomic,weak) id parentModifier;
+@property(nonatomic) NSInteger state;
+@end
 @implementation SBDeckSwitcherModifier @end
 @interface SBMixedGridSwitcherModifier : NSObject @end
 @implementation SBMixedGridSwitcherModifier @end
@@ -36,11 +40,14 @@ static Class TPPhoneDeckClass;
 static id nativeFloor(id root);
 @interface SBMainSwitcherRootSwitcherModifier : NSObject
 @property(nonatomic,strong) id floorFixture;
+@property(nonatomic,strong) SBDeckSwitcherModifier *currentFloor;
+- (id)floorModifier;
 - (id)_newMultitaskingModifierForEnvironmentMode:(NSInteger)mode;
 - (id)floorModifierForTransitionEvent:(id)event;
 - (id)floorModifierForGestureEvent:(id)event;
 @end
 @implementation SBMainSwitcherRootSwitcherModifier
+- (id)floorModifier { return self.currentFloor; }
 - (id)_newMultitaskingModifierForEnvironmentMode:(NSInteger)mode {
     originalCalls++;
     // iOS 17.3.1 IPSW: mode 2 precedes the effectiveSwitcherStyle check.
@@ -114,8 +121,14 @@ int main(void) { @autoreleasepool {
                 "mode 2 must create phone Deck only for enabled tweak + disabled iPad option");
             CHECK(originalCalls == (phone ? 0 : 1), "original called once on passthrough");
             floorCalls = 0;
-            id t = [root floorModifierForTransitionEvent:nil], g = [root floorModifierForGestureEvent:nil];
             BOOL phoneFloor = testMajor == 17 && trollPadEnabled && !useiPadAppSwitcher;
+            id t = [root floorModifierForTransitionEvent:nil];
+            if (phoneFloor) {
+                root.currentFloor = t; root.currentFloor.parentModifier = root;
+            } else if (root.currentFloor) {
+                root.currentFloor.state = 1; root.currentFloor.parentModifier = nil; root.currentFloor = nil;
+            }
+            id g = [root floorModifierForGestureEvent:nil];
             CHECK([t isMemberOfClass:phoneFloor ? SBDeckSwitcherModifier.class : SBMixedGridSwitcherModifier.class],
                 "actual transition floor must replace direct MixedGrid allocation on iOS17");
             CHECK(g == (phoneFloor ? t : root.floorFixture) && floorCalls == 2,
@@ -126,11 +139,27 @@ int main(void) { @autoreleasepool {
         CHECK(hookCalls == (testMajor == 17 ? 3 : (expectedHook ? 1 : 0)), "floor hooks iOS17 only; existing 26+ hook preserved");
         trollPadEnabled = YES; useiPadAppSwitcher = NO; originalCalls = 0;
         if (testMajor == 17) {
-            CHECK([root floorModifierForTransitionEvent:nil] == cachedFloor,"root reuses its Deck across transitions");
+            SBDeckSwitcherModifier *second = [root floorModifierForTransitionEvent:nil];
+            CHECK(second != cachedFloor && second.state == 0,"second opening must not reuse a removed/completed Deck");
+            root.currentFloor = second; second.parentModifier = root;
+            CHECK([root floorModifierForGestureEvent:nil] == second,"attached active floor reused within one session");
+            for (unsigned cycle=0;cycle<3;cycle++) {
+                SBDeckSwitcherModifier *previous = root.currentFloor;
+                previous.state = 1; previous.parentModifier = nil; root.currentFloor = nil;
+                SBDeckSwitcherModifier *next = [root floorModifierForTransitionEvent:nil];
+                CHECK(next != previous && next.state == 0,"repeated entry creates a live Deck after native removal");
+                root.currentFloor = next; next.parentModifier = root;
+            }
             SBMainSwitcherRootSwitcherModifier *other = [cls new]; other.floorFixture = [SBMixedGridSwitcherModifier new];
-            id otherFloor = [other floorModifierForTransitionEvent:nil];
-            CHECK([otherFloor isMemberOfClass:SBDeckSwitcherModifier.class] && otherFloor != cachedFloor,
+            SBDeckSwitcherModifier *otherFloor = [other floorModifierForTransitionEvent:nil];
+            other.currentFloor = otherFloor; otherFloor.parentModifier = other;
+            CHECK([otherFloor isMemberOfClass:SBDeckSwitcherModifier.class] && otherFloor != root.currentFloor,
                 "different roots never share their Deck");
+            root.currentFloor = otherFloor;
+            CHECK([root floorModifierForTransitionEvent:nil] != otherFloor,"never reuse a Deck owned by another root");
+            root.currentFloor = second; second.parentModifier = root; second.state = 1;
+            CHECK([root floorModifierForTransitionEvent:nil] != second,"completed floor is not reused even before detach");
+            root.currentFloor = nil;
         }
         root.floorFixture = [AppExposeFloor new];
         CHECK([root floorModifierForTransitionEvent:nil] == root.floorFixture &&
@@ -155,7 +184,7 @@ int main(void) { @autoreleasepool {
     missingFactory = YES; install(); missingFactory = NO;
     missingDeck = YES; install(); missingDeck = NO;
     CHECK(hookCalls == 0,"wrong ABI and missing classes skipped");
-    puts("PASS production main/transition/gesture factories: iOS17 direct floor -> cached Deck; specialized/nil/identity/original calls preserved; iOS26+/16/18 unchanged; defaults/master/ABI fallbacks");
+    puts("PASS production factories/lifetime: direct floor -> active owned Deck; removed/completed/cross-root floors replaced; repeated sessions; specialized/nil/original/OS/default/ABI fallbacks");
 } return 0; }
 '''
     return fixture + factory + '\nstatic void install(void) {\n' + install + '\n}\n' + main
@@ -180,7 +209,7 @@ def main():
         source = subprocess.check_output(RTK + ['git', 'show', args.baseline_ref + ':TweakSB.x'], cwd=ROOT, text=True)
         old = run(source)
         assert old.returncode and 'iOS=17' in old.stderr, old.stdout + old.stderr
-        print('PASS baseline reproduces iOS17 mode-2 grid despite phone setting: ' + old.stderr.strip())
+        print('PASS baseline regression reproduced: ' + old.stderr.strip())
     fixed = run((ROOT / 'TweakSB.x').read_text())
     assert fixed.returncode == 0, fixed.stdout + fixed.stderr
     print(fixed.stdout.strip())
