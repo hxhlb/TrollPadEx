@@ -1,10 +1,15 @@
 # Independent switcher and native smaller windows
 
-Current release: 2.0.7. On iOS 16/17/18, enabling Stage Manager enables iPad
+Current release: 2.0.8. On iOS 16/17/18, enabling Stage Manager enables iPad
 App Switcher; disabling the switcher exits Stage Manager and selects Split View.
 Respring applies switcher-stack changes. iOS 15 retains an independent choice;
 iOS 26 retains the window-aware integration described below. The following
 integration/test sections preserve historical iOS 26 evidence.
+
+2.0.8 avoids the global CF preference-writer detours on iOS 18 while retaining
+the settings transaction, NSUserDefaults writers and observer-based policy.
+The Rootless 18.5 startup/switcher recovery and native Stage-setting linkage were
+validated on the reported device; see [the startup fix](IOS18-STARTUP.md).
 
 ## Settings contracts
 

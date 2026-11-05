@@ -40,7 +40,9 @@ sizes their interfaces support. See [the smaller-window behavior](docs/IOS26-SCA
 The user accepted the 2.0.7 RootHide coupling candidate on the reported iOS 17
 phone. Host policy and native-entry contracts cover version boundaries, linked
 preference writers, boot/re-entry handling and preserved independent choices.
-No equivalent new real-device acceptance is claimed for iOS 15/16/18/26 or Rootless.
+The 2.0.8 Rootless candidate was accepted on an iPhone 11 Pro running iOS 18.5:
+startup, phone switching and Stage/switcher linking recovered after the startup
+fix. Other systems and RootHide have no equivalent new device acceptance.
 
 
 The combined iOS 26.1 / 23B85 Rootless vphone regression covers phone-card
@@ -63,6 +65,7 @@ background/blur feedback remains outside the VM validation above.
 - [Release changes](CHANGELOG.md)
 - [iOS 26 native integration](docs/IOS26.md)
 - [Independent switcher and crash regression](docs/SWITCHER.md)
+- [iOS 18 startup fix](docs/IOS18-STARTUP.md)
 - [Floating Dock diagnosis and recovery](docs/IOS26-DOCK.md)
 - [iOS 17 drag investigation](docs/IOS17-DRAG.md)
 

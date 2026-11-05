@@ -318,7 +318,7 @@ static BOOL TPPreferenceRequiresRespring(NSString *key) {
 }
 
 - (void)openDiscord {
-    [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://discord.gg/PraZNv2ZE"] options:@{} completionHandler:nil];
+    [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://discord.gg/vzWgenGeX6"] options:@{} completionHandler:nil];
 }
 
 - (void)copyQQGroupNumber {
