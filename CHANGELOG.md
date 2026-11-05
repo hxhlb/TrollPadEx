@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.0.8 — 2026-11-05
+
+### 简体中文
+
+- 修复 iOS 18 关闭 iPad 应用切换器后，Respring 可能进入安全模式的问题，保留台前调度与切换器联动。
+- 更新 Discord 社区入口。
+
+### English
+
+- Fixed a possible Safe Mode after respring with iPad App Switcher disabled on iOS 18, while preserving Stage Manager switcher linking.
+- Updated the Discord community link.
+
 ## 2.0.7 — 2026-11-04
 
 ### 简体中文

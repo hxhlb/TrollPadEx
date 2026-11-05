@@ -51,6 +51,7 @@ static void reenter(NSString *key){TPReconcileStageSwitcherPolicy(key);}
 int main(void){@autoreleasepool{
  for(NSNumber *version in @[@15,@16,@17,@18,@19,@26,@27]){
   major=version.integerValue;BOOL coupled=major>=16&&major<=18;
+  CHECK(TPShouldHookStageSwitcherCFWrites()==(major==16||major==17),"iOS 18 keeps policy but never installs global CF detours");
   reset(NO,NO,YES);set(TPPolicyStageKey,YES);
   CHECK(TPStoredStageManagerEnabled()&&TPStorediPadSwitcherEnabled()==coupled,"Stage ON forces Pad only on 16/17/18");
   CHECK(TPStageSwitcherNeedsRespring()==coupled,"linked Pad enable records restart requirement");

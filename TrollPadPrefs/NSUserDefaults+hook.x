@@ -148,6 +148,9 @@ static BOOL TPPolicyDomainMatches(CFStringRef applicationID) {
     @finally { if (linked) { [self synchronize]; TPEndStageSwitcherWrite(); } }
 }
 %end
+%end
+
+%group TPStageSwitcherCFWriteHooks
 %hookf(void, CFPreferencesSetAppValue, CFStringRef key, CFPropertyListRef value, CFStringRef applicationID) {
     BOOL linked = TPPolicyDomainMatches(applicationID) &&
         TPBeginStageSwitcherWrite((__bridge NSString *)key, (__bridge id)value);
@@ -214,6 +217,9 @@ static BOOL TPPolicyDomainMatches(CFStringRef applicationID) {
     %init;
     if (TPHasStageSwitcherCoupling()) {
         %init(TPStageSwitcherWriteHooks);
+        if (TPShouldHookStageSwitcherCFWrites()) {
+            %init(TPStageSwitcherCFWriteHooks);
+        }
         TPReconcileStageSwitcherPolicy(nil);
     }
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
